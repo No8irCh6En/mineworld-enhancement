@@ -1130,16 +1130,16 @@ def speculative_img_diagd_decode_n_tokens(
         len0 = input_0.shape[1]
         len1 = input_1.shape[1] if spec_active else 0
         
-        # 仅在需要时扩展 token 维（列数可为0也支持）
-        if input_0.shape[0] == 1:
-            input_0 = input_0.expand(input_1.shape[0], -1)
-        # # pos_0 也需要按 batch 扩展
-        # if pos_0.shape[0] == 1:
-        #     pos_0 = pos_0.expand(pos_1.shape[0], -1)
-
-        packed_input = torch.cat([input_0, input_1], dim=1)
-        # packed_pos = torch.cat([pos_0, pos_1], dim=1)
-        packed_pos = torch.cat([pos_0, pos_1], dim=0)
+        if spec_active:
+            # Packed forward: expand Main to batch K to match Spec.
+            if input_0.shape[0] == 1:
+                input_0 = input_0.expand(input_1.shape[0], -1)
+            packed_input = torch.cat([input_0, input_1], dim=1)
+            packed_pos = torch.cat([pos_0, pos_1], dim=0)
+        else:
+            # Spec inactive: Main-only forward at batch=1.
+            packed_input = input_0
+            packed_pos = pos_0
         
         # print(f"[DEBUG] Packed Input Shape: {packed_input.shape}, Packed Pos Shape: {packed_pos.shape}")
         # print(f"[DEBUG] Packed Pos: {packed_pos}")
