@@ -887,16 +887,24 @@ def speculative_img_diagd_decode_n_tokens(
 
     prev_action_candidates = None 
     iter_start_time = time.perf_counter()
+    frame_completed = False  # set True when Main finishes a frame (row list becomes empty)
+    loop_counter = 0
 
     while True:
+        loop_counter += 1
         if state_0_len >= num_generate_tokens:
             break
         
+        if os.environ.get("DIAGD_DEBUG", "0") == "1" and loop_counter % 10 == 0:
+            print(f"[LOOP] iter={loop_counter} state_0_len={state_0_len} state_1_len={state_1_len} row0={state_row_lists[0]} row1={state_row_lists[1]} frame_completed={frame_completed} spec_active={spec_active} draft_done={(state_1_len % pixnum == 0)}")
+        
         # --- Frame Boundary & Sync Logic ---
-        # Frame is only "done" when BOTH the token count AND the schedule agree
-        # (row list is empty, meaning all schedule steps for this frame have completed).
-        main_frame_done = (state_0_len > 0 and state_0_len % pixnum == 0 and len(state_row_lists[0]) == 0)
-        draft_frame_done = (state_1_len % pixnum == 0)
+        # Main frame is done when its schedule has been consumed (row list empty).
+        # restart now happens AFTER verification, so the empty row list persists
+        # until the boundary is handled.
+        main_frame_done = (state_0_len > 0 and len(state_row_lists[0]) == 0)
+        # Spec frame is done when its schedule has been consumed (row list empty).
+        draft_frame_done = (len(state_row_lists[1]) == 0)
         
         # 1. Wait for Spec: If Main is done but Spec (if active) is not, we pause Main
         if main_frame_done and (not draft_frame_done) and (not first_iter):
@@ -971,6 +979,12 @@ def speculative_img_diagd_decode_n_tokens(
                 new_tokens_spec = [[] for _ in range(num_candidates)]
                 
                 prev_action_candidates = None
+                
+                # Restart Main stream for the next frame
+                state_row_lists[0].append(0)
+                state_row_tokens_lists[0].zero_()
+                ptr_heads[0] = 0
+                frame_completed = False
                 
                 continue # Skip decode step, loop back to check next boundary
                 
@@ -1072,6 +1086,12 @@ def speculative_img_diagd_decode_n_tokens(
                 
             new_tokens_spec = [[] for _ in range(num_candidates)]
             new_tokens_main = []
+            
+            # Restart Main stream for the next frame (verification done)
+            state_row_lists[0].append(0)
+            state_row_tokens_lists[0].zero_()
+            ptr_heads[0] = 0
+            frame_completed = False
 
 
         # Checks for Spec Activation
@@ -1128,15 +1148,14 @@ def speculative_img_diagd_decode_n_tokens(
         start_time = time.perf_counter()
         
         if packed_input.shape[1] > 0:
-            with torch.nn.attention.sdpa_kernel(SDPBackend.MATH):
-                packed_next_tokens = decode_some_token_function(
-                    model,
-                    input_ids=packed_input,
-                    position_ids=packed_pos,
-                    temperature=temperature,
-                    top_k=top_k,
-                    top_p=top_p,
-                )
+            packed_next_tokens = decode_some_token_function(
+                model,
+                input_ids=packed_input,
+                position_ids=packed_pos,
+                temperature=temperature,
+                top_k=top_k,
+                top_p=top_p,
+            )
                 
             
             if len0 > 0:
@@ -1283,15 +1302,17 @@ def speculative_img_diagd_decode_n_tokens(
                     state_row_last_tokens[1][need_remove_row] = None
              
         if len(state_row_lists[0]) == 0 and state_0_len < num_generate_tokens:
-
-             # Flush accumulated Main tokens before restart (verification may not have run)
+             # A frame just completed. Flush its tokens as a COMPLETE 336-token
+             # frame (the prefill token is stored separately in all_tokens_main[1],
+             # so prepend it to the 335 tokens accumulated in new_tokens_main).
              if new_tokens_main:
-                 all_tokens_main.append(torch.cat(new_tokens_main, dim=0).tolist())
+                 frame_tokens = torch.cat(new_tokens_main, dim=0).tolist()
+                 if len(frame_tokens) == pixnum - 1 and first_pixel_token is not None:
+                     frame_tokens = [int(first_pixel_token.squeeze().item())] + frame_tokens
+                 all_tokens_main.append(frame_tokens)
                  new_tokens_main = []
-             state_row_lists[0].append(0)
-             state_row_tokens_lists[0].zero_()
-             ptr_heads[0] = 0
-            #  state_row_tokens_lists[0][0] = 1
+             frame_completed = True
+             # Do NOT restart here — restart happens after verification at loop top.
 
     return all_tokens_main[1:]
 

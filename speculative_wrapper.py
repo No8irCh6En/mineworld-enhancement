@@ -213,13 +213,10 @@ class SpeculativeInferenceWrapper:
             
             # --- Image Space Merge Logic ---
             if merge:
-                # 4.1 Decode Predicted Tokens -> Predicted Image
-                # Warning: VAE.token2image usually takes 1 item or batch? 
-                # Our VAE wrapper seems designed for single item or uses loop internal?
-                # Check VAE code: "tokens shape (1, 14, 24, 64)" -> get_codebook_entry -> ...
-                # It seems to handle single-item batches internally?
-                # Forcing batch dim may break things.
-                pred_img_uint8 = self.vae.token2image(pred_tokens)
+                # 4.1 Decode Predicted Tokens -> Predicted Image (batch, GPU)
+                # token2image only accepts a single [1,14,24]; use token2image_gpu
+                # which supports a batch [K,14,24] and returns [K,3,H,W] in [-1,1].
+                pred_img_gpu = self.vae.token2image_gpu(pred_tokens)  # [K,3,H,W], [-1,1]
                 
                 # 4.2 Confidence Map (sigmoid) -> upsample to image spatial size
                 confidence = torch.sigmoid(pred_conf_logits).squeeze(1)  # [K, 14, 24]
@@ -227,28 +224,8 @@ class SpeculativeInferenceWrapper:
                 _, _, h_img, w_img = img_depth_expanded.shape  # [K,4,H,W]
                 conf_img = F.interpolate(confidence.unsqueeze(1), size=(h_img, w_img), mode='bilinear', align_corners=False)  # [K,1,H,W]
 
-                # 4.3 Draft image: convert VAE output to tensor batch [K,3,H,W] and normalize to VAE input range (-1,1)
-                if isinstance(pred_img_uint8, np.ndarray):
-                    if pred_img_uint8.ndim == 4:
-                        # (K, H, W, 3) -> (K,3,H,W)
-                        draft_img_tensor = torch.from_numpy(pred_img_uint8).permute(0, 3, 1, 2).float().to(device) / 255.0
-                    elif pred_img_uint8.ndim == 3:
-                        # Single image -> replicate to K
-                        tmp = torch.from_numpy(pred_img_uint8).permute(2, 0, 1).unsqueeze(0).float().to(device) / 255.0
-                        draft_img_tensor = tmp.expand(K, -1, -1, -1)
-                    else:
-                        raise RuntimeError("Unexpected pred_img_uint8 shape")
-                else:
-                    # If VAE returns tensor-like
-                    draft_img_tensor = torch.as_tensor(pred_img_uint8, device=device).float()
-                    if draft_img_tensor.dim() == 3:
-                        draft_img_tensor = draft_img_tensor.permute(2, 0, 1).unsqueeze(0).expand(K, -1, -1, -1)
-                    else:
-                        draft_img_tensor = draft_img_tensor.permute(0, 3, 1, 2)
-                draft_img_tensor = draft_img_tensor / 255.0
-
-                # Normalize to VAE style [-1,1]
-                draft_img_tensor = (draft_img_tensor - 0.5) / 0.5
+                # 4.3 Draft image is already [K,3,H,W] in [-1,1] on GPU
+                draft_img_tensor = pred_img_gpu
 
                 # 4.4 Merge: use only RGB channels from img_depth_expanded (first 3 channels)
                 prev_rgb = img_depth_expanded[:, :3, :, :]  # [K,3,H,W]
