@@ -5,8 +5,8 @@ model:
     tokenizer_config:
       target: vae.VAE
       params:
-        config_path: checkpoints/vae/config.json
-        ckpt_path: checkpoints/vae/vae.ckpt     
+        config_path: /data/jjli/workspace/mineworld/checkpoints/vae/config.json
+        ckpt_path: /data/jjli/workspace/mineworld/checkpoints/vae/vae.ckpt     
     transformer_config:
       target: transformers.LlamaConfig
       params:

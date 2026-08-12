@@ -6,7 +6,7 @@ from PIL import Image
 import numpy as np
 import torch
 import cv2
-from utils import load_model
+from util.helper import load_model
 from omegaconf import OmegaConf
 from argparse import ArgumentParser
 from collections import deque

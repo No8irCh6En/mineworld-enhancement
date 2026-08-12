@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import diffusers
 from safetensors.torch import load_file as load_safetensors
-from utils import print0, get_valid_paths, tensor_to_uint8
+from util.helper import print0, get_valid_paths, tensor_to_uint8
 
 
 class VAE(nn.Module):
@@ -58,10 +58,22 @@ class VAE(nn.Module):
     @torch.no_grad()
     def token2image(self, tokens):
         assert tokens.max() < 8192, f"code max value is {tokens.max()}"
-        shape = (1, 14, 24, 64) 
+        shape = (1, 14, 24, 64)
+        # print(f"[DEUBG] tokens shape: {tokens.shape}")
         with torch.autocast(device_type='cuda', dtype=torch.float32):
             quant = self.model.quantize.get_codebook_entry(tokens, shape)
             quant2 = self.model.post_quant_conv(quant)
             dec = self.model.decoder(quant2)
         img = tensor_to_uint8(dec[0]).transpose(1, 2, 0)
         return img
+    
+    @torch.no_grad()
+    def token2image_gpu(self, tokens):
+        shape = (-1, 14, 24, 64)
+        with torch.autocast(device_type='cuda', dtype=torch.float32):
+            quant = self.model.quantize.get_codebook_entry(tokens, shape)
+            quant2 = self.model.post_quant_conv(quant)
+            dec = self.model.decoder(quant2)
+            
+        return torch.clamp(dec, -1.0, 1.0)
+        

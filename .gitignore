@@ -1,0 +1,58 @@
+# ===== Model weights =====
+checkpoints/
+pred_model/
+pred_model_uncertainty/
+pred_model_attn/
+common_metrics_on_video_quality/
+
+# ===== Data =====
+small_validation/
+validation/
+dataset_example/
+
+# ===== Outputs =====
+outputs/
+outputs_video/
+tmp/
+vis_results/
+vis_results_attn_val/
+vis_results_best/
+vis_results_uncertainty_val/
+vis_results_val/
+eval_results_video/
+eval_neighbor_robustness/
+res/
+
+# ===== Logs =====
+logs/
+log.txt
+nohup.out
+*.log
+
+# ===== Analysis =====
+analysis_results/
+attention_weights/
+check/
+episode_13/
+depth_gt/
+depth_misalign/
+depth_warp/
+misalign/
+
+# ===== IDE / cache =====
+.vscode/
+__pycache__/
+*.pyc
+*.png
+
+# ===== Experimental / debug files =====
+lvm_jjl.py
+lvm_.py
+train_.py
+check_corr.py
+test.py
+configs/modify.yaml
+PROJECT_INTRO.md
+
+# ===== Legacy =====
+legacy/

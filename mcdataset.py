@@ -8,7 +8,7 @@ import collections
 import numpy as np
 from typing import Union, Dict
 import torch
-from utils import print0
+from util.helper import print0
 
 
 # https://github.com/openai/Video-Pre-Training/blob/aed46b90e8db2332801feabd8be2de01f92c0ad2/run_inverse_dynamics_model.py#L17
@@ -317,7 +317,7 @@ class MCDataset(torch.utils.data.Dataset):
             action_vocab = {k: v + action_vocab_offset for k, v in action_vocab.items()}
 
         if verbose:
-            print0(f"[bold yellow]\[MCDataset][/bold yellow] Action Vocab: {action_vocab}")
+            print0(f"[bold yellow]\[MCDataset][/bold yellow] Action Vocab size: {len(action_vocab)}")
 
         self.action_vocab = action_vocab
         # return action_vocab
@@ -384,7 +384,7 @@ class MCDataset(torch.utils.data.Dataset):
         action_list[9] = self._handle_conflict_action_index(action_dict, "drop", "pickItem", "<null_act>", verbose=verbose)
 
         if verbose:
-            print0(f"[bold yellow]\[MCDataset][/bold yellow] Action List: {action_list}")
+            print0(f"[bold yellow]\[MCDataset][/bold yellow] Action List length: {len(action_list)}, head: {action_list[:5]}, tail: {action_list[-3:]}")
 
         return action_list
 
