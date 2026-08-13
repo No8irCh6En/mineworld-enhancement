@@ -3,6 +3,7 @@ import cv2
 import torch
 import time
 import numpy as np
+import subprocess
 from tqdm import tqdm
 from rich import print
 from PIL import Image
@@ -117,6 +118,32 @@ def token2video(code_list, tokenizer, save_path, fps, device = 'cuda', save_fram
         if save_frames_dir:
             cv2.imwrite(os.path.join(save_frames_dir, f"image_{i:05d}.png"), frame)
     video.release()
+    _reencode_h264(save_path, fps)
+
+
+def _reencode_h264(save_path, fps):
+    """Re-encode the mp4v video to H.264 so VS Code can preview it.
+
+    OpenCV's mp4v codec produces a stream VS Code cannot play. ffmpeg (available
+    on the server) re-encodes it to H.264 (libx264), which previews fine.
+    """
+    import shutil
+    try:
+        if not shutil.which("ffmpeg"):
+            print("[Warning] ffmpeg not found; skipping H.264 re-encode.")
+            return
+        tmp_path = save_path + ".h264.tmp.mp4"
+        # -y overwrite; -c:v libx264 for VS Code preview compatibility
+        cmd = ["ffmpeg", "-y", "-i", save_path, "-c:v", "libx264",
+               "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p",
+               tmp_path]
+        r = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if r.returncode == 0 and os.path.exists(tmp_path):
+            os.replace(tmp_path, save_path)
+        else:
+            print("[Warning] H.264 re-encode failed; keeping original mp4v.")
+    except Exception as e:
+        print(f"[Warning] H.264 re-encode error: {e}")
 
 
 
