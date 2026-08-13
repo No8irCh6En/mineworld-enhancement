@@ -859,7 +859,10 @@ def speculative_img_diagd_decode_n_tokens(
     # Initialize with the first pixel token from prefill
     if first_pixel_token is not None:
         state_row_last_tokens[0][0] = first_pixel_token
-        state_row_tokens_lists[0][0] = 1  # row 0 has 1 token
+        # NOTE: state_row_tokens_lists[0] tracks PER-FRAME counts (for insert
+        # positions). The prefill token is stored separately in all_tokens_main[1],
+        # so the per-frame count starts at 0.
+        state_row_tokens_lists[0][0] = 0
         if state_row_tokens_lists[0][0] == windowsize:
             state_row_lists[0].append(1)
     else:
@@ -875,9 +878,9 @@ def speculative_img_diagd_decode_n_tokens(
     first_iter = True
 
     all_tokens_main = [input_ids.squeeze(0).tolist()]
-    if first_pixel_token is not None:
-        # Store first pixel token for draft_func reference
-        all_tokens_main.append(first_pixel_token.squeeze(0).tolist())
+    # NOTE: the first pixel token is NOT stored separately here. It is prepended
+    # to the first frame's flush (see flush logic below). This keeps every entry
+    # of all_tokens_main[1:] a complete 336-token frame.
     new_tokens_spec = [[] for _ in range(num_candidates)]
     new_tokens_main = []
     state_1_last_tokens_setup = None
@@ -889,6 +892,7 @@ def speculative_img_diagd_decode_n_tokens(
     iter_start_time = time.perf_counter()
     frame_completed = False  # set True when Main finishes a frame (row list becomes empty)
     loop_counter = 0
+    draft_first_tokens = None  # [K] first pixel token of each draft candidate (for HIT reconstruction)
 
     while True:
         loop_counter += 1
@@ -973,7 +977,18 @@ def speculative_img_diagd_decode_n_tokens(
                 spec_active = False 
                 state_1_len = 0
                 current_step = 0
-                all_tokens_main.append(new_tokens_spec[hit_candidate_idx].tolist()) if new_tokens_spec[hit_candidate_idx].numel() > 0 else None
+                # Reconstruct the full 336-token frame. The spec stream may have
+                # generated 335 tokens (its first position is occupied by the
+                # prefill'd action/draft context). Pad to 336 if needed.
+                spec_frame = new_tokens_spec[hit_candidate_idx]
+                print(f"[TOKEN-DEBUG] HIT spec_frame numel={spec_frame.numel()}, draft_first_tokens={draft_first_tokens is not None}")
+                if spec_frame.numel() > 0:
+                    if spec_frame.numel() == pixnum - 1 and draft_first_tokens is not None:
+                        first_tok = draft_first_tokens[hit_candidate_idx].view(1)
+                        full_frame = torch.cat([first_tok, spec_frame], dim=0)
+                    else:
+                        full_frame = spec_frame
+                    all_tokens_main.append(full_frame.tolist())
                 
                 new_tokens_main = []
                 new_tokens_spec = [[] for _ in range(num_candidates)]
@@ -1052,6 +1067,8 @@ def speculative_img_diagd_decode_n_tokens(
                 print(f"[DEBUG] prev_tokens shape: {prev_tokens.shape}, action_candidates shape: {next_action_candidates.shape}")
                 
                 draft_input_ids = draft_func(all_tokens_main[-1], next_action_candidates)
+                # Save the first pixel token of each draft candidate (HIT reconstruction)
+                draft_first_tokens = draft_input_ids[:, 0].clone()  # [K]
                 # draft_pos = torch.arange(action_start_pos + actnum, action_start_pos + actnum + pixnum, device="cuda").unsqueeze(0)
                 draft_pos = torch.arange(action_start_pos + actnum, action_start_pos + actnum + pixnum, device="cuda")
                 
@@ -1180,8 +1197,6 @@ def speculative_img_diagd_decode_n_tokens(
             steps = min(total_steps, plan_len - ptr)
             if steps <= 0:
                 return 0
-            counts_after = schedule["prefix_counts"][:, ptr + steps]
-            state_row_tokens_lists[idx][:] = counts_after
 
             working_stream = next_tokens_stream[:, :steps, ...]
 
@@ -1195,19 +1210,17 @@ def speculative_img_diagd_decode_n_tokens(
                 stream_chunks = working_stream.permute(1, 0)
 
             if idx == 0:
-                # Insert tokens at correct row-major positions (matching img_diagd_decode_n_tokens)
+                # Insert tokens at correct row-major positions, matching
+                # img_diagd_decode_n_tokens: compute position from per-frame
+                # running counts, insert, THEN increment the count.
                 for offset, row_id in enumerate(row_ids):
                     chunk = stream_chunks[offset]
                     chunk = chunk[0].reshape(1)  # Main's token only, shape [1]
-                    # Compute row-major position from prefix_counts.
-                    # counts_after gives the global per-row counts INCLUDING the
-                    # prefill token, but result_accum (new_tokens_main) starts
-                    # empty for each frame, so we subtract 1 to get the
-                    # 0-indexed insert position within the current frame.
-                    row_pos = counts_after[row_id].item() - 1  # 0-indexed within row
-                    prev_total = counts_after[:row_id].sum().item()  # tokens in earlier rows
-                    insert_pos = prev_total + row_pos - 1  # subtract 1 for prefill offset
+                    row_pos = state_row_tokens_lists[idx][row_id].item()  # running count before increment
+                    prev_total = state_row_tokens_lists[idx][:row_id].sum().item()
+                    insert_pos = prev_total + row_pos
                     result_accum.insert(insert_pos, chunk.clone())
+                    state_row_tokens_lists[idx][row_id] += 1  # increment AFTER insert
             else:
                 for cand_idx, cand_tokens in enumerate(working_stream.unbind(0)):
                     if cand_idx >= len(result_accum):
@@ -1246,6 +1259,8 @@ def speculative_img_diagd_decode_n_tokens(
             prev_0_len = state_0_len
             added_len = _update_stream_state(0, schedule_main, next_tokens_0, new_tokens_main, state_row_last_tokens[0])
             state_0_len += added_len
+            if os.environ.get("DIAGD_DEBUG", "0") == "1":
+                print(f"[STATE] added_len={added_len}, state_0_len={state_0_len}, new_tokens_main={len(new_tokens_main)}, row_tok={state_row_tokens_lists[0][:3].tolist()}")
             # Sync Main -> Spec cache only when a frame just completed
             # (only_previous mask means intra-frame sync is unnecessary)
             if prev_0_len // pixnum != state_0_len // pixnum and len0 > 0:
@@ -1301,12 +1316,15 @@ def speculative_img_diagd_decode_n_tokens(
                     state_row_lists[1].remove(need_remove_row)
                     state_row_last_tokens[1][need_remove_row] = None
              
-        if len(state_row_lists[0]) == 0 and state_0_len < num_generate_tokens:
+        if len(state_row_lists[0]) == 0:
              # A frame just completed. Flush its tokens as a COMPLETE 336-token
-             # frame (the prefill token is stored separately in all_tokens_main[1],
-             # so prepend it to the 335 tokens accumulated in new_tokens_main).
+             # frame. For the FIRST frame, prepend the prefill token (stored in
+             # all_tokens_main[1]) to the 335 accumulated tokens. Subsequent
+             # frames already accumulate all 336 tokens.
              if new_tokens_main:
                  frame_tokens = torch.cat(new_tokens_main, dim=0).tolist()
+                 print(f"[TOKEN-DEBUG] flush frame_tokens={len(frame_tokens)}, state_0_len={state_0_len}")
+                 # First frame: state_0_len reached pixnum, prefill token separate
                  if len(frame_tokens) == pixnum - 1 and first_pixel_token is not None:
                      frame_tokens = [int(first_pixel_token.squeeze().item())] + frame_tokens
                  all_tokens_main.append(frame_tokens)
