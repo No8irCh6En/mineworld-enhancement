@@ -133,34 +133,24 @@ class SpeculativeInferenceWrapper:
         # prev_tokens: iterable/list or tensor of token ids length PIX_NUM
         # 返回: tensor of draft token ids (1, PIX_NUM) or (1,14,24)
         device = self.device
+        _PROFILE = os.environ.get("DRAFT_PROFILE", "0") == "1"
+        def _t(msg):
+            if _PROFILE:
+                torch.cuda.synchronize()
+                now = time.perf_counter()
+                if not hasattr(self, "_last_draft_t"):
+                    self._last_draft_t = now
+                print(f"[DRAFT-PROFILE] {msg}: {now - self._last_draft_t:.4f}s")
+                self._last_draft_t = now
+        _t("start")
         # 1. tokens -> tensor and clamp
         img_tokens_prev = torch.as_tensor(prev_tokens, dtype=torch.long, device=device).view(1, 14, 24)
         img_tokens_prev = torch.clamp(img_tokens_prev, max=8191)
         
         with torch.no_grad():
-            # 2. decode tokens -> prev image (uint8 HWC 或 CHW)
-            prev_img_uint8 = self.vae.token2image(img_tokens_prev)  # may return np.ndarray or tensor
-
-            # 3. convert -> torch tensor (C,H,W), float [0,1], then to [-1,1]
-            if isinstance(prev_img_uint8, np.ndarray):
-                prev_img_tensor = torch.from_numpy(prev_img_uint8).to(device)
-            else:
-                prev_img_tensor = torch.as_tensor(prev_img_uint8).to(device)
-
-            # ensure shape CHW
-            if prev_img_tensor.ndim == 3 and prev_img_tensor.shape[2] == 3:
-                # HWC -> CHW
-                prev_img_tensor = prev_img_tensor.permute(2, 0, 1)
-            elif prev_img_tensor.ndim == 3 and prev_img_tensor.shape[0] == 3:
-                pass
-            else:
-                # fallback: try to reshape
-                prev_img_tensor = prev_img_tensor.view(3, prev_img_tensor.shape[-2], prev_img_tensor.shape[-1])
-
-            prev_img_tensor = prev_img_tensor.float() / 255.0
-            # normalize to [-1,1] as VAE style
-            prev_img_tensor = (prev_img_tensor - 0.5) / 0.5
-            prev_img_tensor = prev_img_tensor.unsqueeze(0)  # [1,3,H,W]
+            # 2. decode tokens -> prev image directly on GPU ([-1,1], [1,3,H,W]).
+            prev_img_tensor = self.vae.token2image_gpu(img_tokens_prev)  # [1,3,H,W] in [-1,1]
+            _t("vae decode gpu")
 
             # 4. prepare depth input exactly like train_uncertainty:
             #    convert to [0,1], then ImageNet normalize and resize to (H=224, W=384)
@@ -175,6 +165,7 @@ class SpeculativeInferenceWrapper:
 
             # 5. compute depth_map, normalize and resize back to VAE image size if needed
             depth_map = self.depth_model(current_depth_input)
+            _t("depth estimate")
             if depth_map.dim() == 3:
                 depth_map = depth_map.unsqueeze(1)  # (1,1,H,W)
             # normalize depth_map
@@ -207,6 +198,7 @@ class SpeculativeInferenceWrapper:
             # 4. Predict Draft
             # pred_conf_logits: [K, 1, 14, 24], logits_token: [K, 8192, 14, 24]
             pred_conf_logits, logits_token = self.draft_model(img_depth_expanded, action_vecs) 
+            _t("draft forward")
             
             # Get Raw Predicted Tokens
             pred_tokens = torch.argmax(logits_token, dim=1) # [K, 14, 24]
