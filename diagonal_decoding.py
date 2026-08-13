@@ -1303,8 +1303,6 @@ def speculative_img_diagd_decode_n_tokens(
             # reuses the output buffer, so the decode result must be copied out
             # before the next decode overwrites it.
             packed_next_tokens = packed_next_tokens.clone()
-            if os.environ.get("SYNC_EACH", "0") == "1":
-                torch.cuda.synchronize()
             speculative_img_diagd_decode_n_tokens._decode_time += time.perf_counter() - start_time
             speculative_img_diagd_decode_n_tokens._decode_calls += 1
                 
