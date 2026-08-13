@@ -927,6 +927,7 @@ def speculative_img_diagd_decode_n_tokens(
     _DEBUG_ENV = os.environ.get("DIAGD_DEBUG", "0") == "1"
 
     while True:
+        _t_loop = time.perf_counter()
         loop_counter += 1
         if state_0_len >= num_generate_tokens:
             break
@@ -1233,6 +1234,10 @@ def speculative_img_diagd_decode_n_tokens(
                 top_k=top_k,
                 top_p=top_p,
             )
+            # Clone ONCE here (single GPU alloc) so per-token clones below can be
+            # avoided; torch.compile's CUDA graph reuses the output buffer, so
+            # the decode result must be copied out before the next decode.
+            packed_next_tokens = packed_next_tokens.clone()
             speculative_img_diagd_decode_n_tokens._decode_time += time.perf_counter() - start_time
             speculative_img_diagd_decode_n_tokens._decode_calls += 1
                 
@@ -1287,7 +1292,7 @@ def speculative_img_diagd_decode_n_tokens(
                     row_pos = row_counts_cpu[row_id]  # running count before increment
                     prev_total = sum(row_counts_cpu[:row_id])
                     insert_pos = prev_total + row_pos
-                    result_accum.insert(insert_pos, chunk.clone())
+                    result_accum.insert(insert_pos, chunk)  # already cloned in bulk
                     row_counts_cpu[row_id] += 1  # increment AFTER insert
             else:
                 for cand_idx, cand_tokens in enumerate(working_stream.unbind(0)):
@@ -1400,12 +1405,17 @@ def speculative_img_diagd_decode_n_tokens(
              frame_completed = True
              # Do NOT restart here — restart happens after verification at loop top.
 
+        if not hasattr(speculative_img_diagd_decode_n_tokens, "_loop_total"):
+            speculative_img_diagd_decode_n_tokens._loop_total = 0.0
+        speculative_img_diagd_decode_n_tokens._loop_total += time.perf_counter() - _t_loop
+
     if os.environ.get("PROFILE", "0") == "1":
         d = speculative_img_diagd_decode_n_tokens._decode_time
         c = speculative_img_diagd_decode_n_tokens._decode_calls
         p = speculative_img_diagd_decode_n_tokens._prep_time
         u = speculative_img_diagd_decode_n_tokens._update_time
-        print(f"[PROFILE] decode={d:.3f}s ({c} calls), prepare={p:.3f}s, update={u:.3f}s")
+        lt = speculative_img_diagd_decode_n_tokens._loop_total
+        print(f"[PROFILE] decode={d:.3f}s ({c} calls), prepare={p:.3f}s, update={u:.3f}s, loop_total={lt:.3f}s, other={lt-d-p-u:.3f}s")
     return all_tokens_main[1:]
 
 DIAG_SCHEDULE_CACHE: Dict[Tuple[int, int], Dict[str, Any]] = {}
