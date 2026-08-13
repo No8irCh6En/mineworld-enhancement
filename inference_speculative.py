@@ -298,7 +298,7 @@ def lvm_generate(args, model, output_dir, demo_video):
             print(f"[ORACLE] Tokenized {len(gt_frames_tokens)} GT frames for oracle draft")
         
         oracle_call_count = [1]
-        def _oracle_draft_func(prev_tokens, action_candidates):
+        def _oracle_draft_func(prev_tokens, action_candidates, merge=True):
             idx = oracle_call_count[0]
             oracle_call_count[0] += 1
             K = action_candidates.size(0)
@@ -311,7 +311,7 @@ def lvm_generate(args, model, output_dir, demo_video):
             hist_len = action_history.size(0) if isinstance(action_history, torch.Tensor) else len(action_history)
             idx = hist_len
             if idx < len(gt_actions):
-                gt = gt_actions[idx].to(device="cuda")
+                gt = torch.tensor(gt_actions[idx], device="cuda", dtype=torch.long)
                 return gt.unsqueeze(0).expand(5, -1)
             return torch.zeros(5, 11, device="cuda", dtype=torch.long)
         

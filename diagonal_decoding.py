@@ -735,7 +735,15 @@ def speculative_img_diagd_prepare_inputs(
 
         pos_ids, inputs = [], []
         for r in row_list:
-            global_idx = cache["row_base"][r] + row_tok[r] + frame_offset
+            # global_idx must be a plain Python int to avoid GPU->CPU sync.
+            # row_tok[r] may be a GPU scalar tensor — convert via int() ONLY
+            # if it is a tensor; otherwise it is already a Python int.
+            rt = row_tok[r]
+            if torch.is_tensor(rt):
+                rt = int(rt.item())
+            else:
+                rt = int(rt)
+            global_idx = cache["row_base"][r] + rt + frame_offset
             pos_ids.append(global_idx)
 
             if last_tok[r] is not None:
@@ -816,6 +824,9 @@ def speculative_img_diagd_decode_n_tokens(
     # 1. Expand KV Cache 
     model.prepare_parallel_speculation(num_candidates)
     action_seq = kwargs.get("action", None)
+    # reset per-demo decode timing
+    speculative_img_diagd_decode_n_tokens._decode_time = 0.0
+    speculative_img_diagd_decode_n_tokens._decode_calls = 0
 
     # --- Prefill the prompt to populate KV cache ---
     # This matches the non-speculative flow: img_diagd_generate calls prefill
@@ -855,6 +866,8 @@ def speculative_img_diagd_decode_n_tokens(
     state_row_lists = [[0] for _ in range(spec_len)]
     state_row_tokens_lists = [torch.zeros((rownum,), dtype=torch.long, device="cuda") for _ in range(spec_len)]
     state_row_last_tokens = [[None for _ in range(rownum)] for _ in range(spec_len)]
+    # CPU-side mirror of row token counts (avoids GPU->CPU sync in the hot loop)
+    speculative_img_diagd_decode_n_tokens._row_counts_cpu = [0] * rownum
 
     # Initialize with the first pixel token from prefill
     if first_pixel_token is not None:
@@ -1009,6 +1022,8 @@ def speculative_img_diagd_decode_n_tokens(
                 # Restart Main stream for the next frame
                 state_row_lists[0].append(0)
                 state_row_tokens_lists[0].zero_()
+                if hasattr(speculative_img_diagd_decode_n_tokens, "_row_counts_cpu"):
+                    speculative_img_diagd_decode_n_tokens._row_counts_cpu = [0] * rownum
                 ptr_heads[0] = 0
                 frame_completed = False
                 
@@ -1120,6 +1135,8 @@ def speculative_img_diagd_decode_n_tokens(
             # Restart Main stream for the next frame (verification done)
             state_row_lists[0].append(0)
             state_row_tokens_lists[0].zero_()
+            if hasattr(speculative_img_diagd_decode_n_tokens, "_row_counts_cpu"):
+                speculative_img_diagd_decode_n_tokens._row_counts_cpu = [0] * rownum
             ptr_heads[0] = 0
             frame_completed = False
 
@@ -1145,10 +1162,14 @@ def speculative_img_diagd_decode_n_tokens(
 
         # --- Prepare Inputs (Mixed) ---
         # Pass Main state only if main_active_now is True
-        main_args = (state_row_lists[0], state_row_tokens_lists[0], state_row_last_tokens[0])
+        # NOTE: pass the CPU row-count mirror for Main to avoid GPU->CPU sync
+        # in the hot loop. The GPU tensor is only needed for schedule bookkeeping.
+        row_tok_0_cpu = speculative_img_diagd_decode_n_tokens._row_counts_cpu
+        main_args = (state_row_lists[0], row_tok_0_cpu, state_row_last_tokens[0])
         if not main_active_now:
-             main_args = ([], state_row_tokens_lists[0], [None for _ in range(rownum)])
+             main_args = ([], row_tok_0_cpu, [None for _ in range(rownum)])
 
+        _t_prep = time.perf_counter()
         input_0, pos_0, input_1, pos_1 = speculative_img_diagd_prepare_inputs(
             main_args,
             (state_row_lists[1], state_row_tokens_lists[1], state_row_last_tokens[1]) if spec_active else ([], state_row_tokens_lists[1], [None for _ in range(rownum)]),
@@ -1156,6 +1177,9 @@ def speculative_img_diagd_decode_n_tokens(
             pixnum, actnum, columnnum, promptlen, 
             **kwargs
         )
+        if not hasattr(speculative_img_diagd_decode_n_tokens, "_prep_time"):
+            speculative_img_diagd_decode_n_tokens._prep_time = 0.0
+        speculative_img_diagd_decode_n_tokens._prep_time += time.perf_counter() - _t_prep
 
         len0 = input_0.shape[1]
         len1 = input_1.shape[1] if spec_active else 0
@@ -1191,9 +1215,6 @@ def speculative_img_diagd_decode_n_tokens(
                 top_k=top_k,
                 top_p=top_p,
             )
-            if not hasattr(speculative_img_diagd_decode_n_tokens, "_decode_time"):
-                speculative_img_diagd_decode_n_tokens._decode_time = 0.0
-                speculative_img_diagd_decode_n_tokens._decode_calls = 0
             speculative_img_diagd_decode_n_tokens._decode_time += time.perf_counter() - start_time
             speculative_img_diagd_decode_n_tokens._decode_calls += 1
                 
@@ -1236,14 +1257,20 @@ def speculative_img_diagd_decode_n_tokens(
                 # Insert tokens at correct row-major positions, matching
                 # img_diagd_decode_n_tokens: compute position from per-frame
                 # running counts, insert, THEN increment the count.
+                # NOTE: state_row_tokens_lists[idx] is a GPU tensor; calling
+                # .item() on it forces a GPU->CPU sync EVERY token (the dominant
+                # cost). Keep a CPU-side mirror to avoid syncs.
+                if not hasattr(speculative_img_diagd_decode_n_tokens, "_row_counts_cpu"):
+                    speculative_img_diagd_decode_n_tokens._row_counts_cpu = [0] * rownum
+                row_counts_cpu = speculative_img_diagd_decode_n_tokens._row_counts_cpu
                 for offset, row_id in enumerate(row_ids):
                     chunk = stream_chunks[offset]
                     chunk = chunk[0].reshape(1)  # Main's token only, shape [1]
-                    row_pos = state_row_tokens_lists[idx][row_id].item()  # running count before increment
-                    prev_total = state_row_tokens_lists[idx][:row_id].sum().item()
+                    row_pos = row_counts_cpu[row_id]  # running count before increment
+                    prev_total = sum(row_counts_cpu[:row_id])
                     insert_pos = prev_total + row_pos
                     result_accum.insert(insert_pos, chunk.clone())
-                    state_row_tokens_lists[idx][row_id] += 1  # increment AFTER insert
+                    row_counts_cpu[row_id] += 1  # increment AFTER insert
             else:
                 for cand_idx, cand_tokens in enumerate(working_stream.unbind(0)):
                     if cand_idx >= len(result_accum):
@@ -1282,8 +1309,9 @@ def speculative_img_diagd_decode_n_tokens(
             prev_0_len = state_0_len
             added_len = _update_stream_state(0, schedule_main, next_tokens_0, new_tokens_main, state_row_last_tokens[0])
             state_0_len += added_len
-            if os.environ.get("DIAGD_DEBUG", "0") == "1":
-                print(f"[STATE] added_len={added_len}, state_0_len={state_0_len}, new_tokens_main={len(new_tokens_main)}, row_tok={state_row_tokens_lists[0][:3].tolist()}")
+            if not hasattr(speculative_img_diagd_decode_n_tokens, "_update_time"):
+                speculative_img_diagd_decode_n_tokens._update_time = 0.0
+            speculative_img_diagd_decode_n_tokens._update_time += time.perf_counter() - start_time
             # Sync Main -> Spec cache only when a frame just completed
             # (only_previous mask means intra-frame sync is unnecessary)
             if prev_0_len // pixnum != state_0_len // pixnum and len0 > 0:
@@ -1357,7 +1385,9 @@ def speculative_img_diagd_decode_n_tokens(
     if os.environ.get("DIAGD_DEBUG", "0") == "1":
         d = speculative_img_diagd_decode_n_tokens._decode_time
         c = speculative_img_diagd_decode_n_tokens._decode_calls
-        print(f"[PROFILE] total decode time={d:.3f}s, calls={c}, avg={d/max(1,c)*1000:.2f}ms/call")
+        p = speculative_img_diagd_decode_n_tokens._prep_time
+        u = speculative_img_diagd_decode_n_tokens._update_time
+        print(f"[PROFILE] decode={d:.3f}s ({c} calls), prepare={p:.3f}s, update={u:.3f}s")
     return all_tokens_main[1:]
 
 DIAG_SCHEDULE_CACHE: Dict[Tuple[int, int], Dict[str, Any]] = {}
