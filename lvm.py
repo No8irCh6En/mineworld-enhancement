@@ -1475,7 +1475,9 @@ class LlamaForCausalLM(PreTrainedModel):
         # — NOT compilable. Leave them eager. Only compile the big-model decode.
         self.draft_func = draft_func
         self.action_pred_func = action_pred_func
-        self.prefill = prefill
+        # prefill also benefits from compile (fixed shape: prompt 347 tokens
+        # or draft 358 tokens). Use dynamic to avoid per-shape recompile.
+        self.prefill = torch.compile(prefill, fullgraph=True, dynamic=True)
         print(f"[DEBUG] speculative_diag_generate_img_token input_ids: {input_ids}, shape: {input_ids.shape}, action_all shape: {action_all.shape}")
         # Concatenate the first action to the input, matching img_diagd_generate behavior
         input_ids = torch.cat([input_ids, action_all[0].view(1, -1)], dim=-1)

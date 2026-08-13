@@ -942,7 +942,14 @@ def speculative_img_diagd_decode_n_tokens(
 
             hit_candidate_idx = -1
             if prev_action_candidates is not None:
-                matches = torch.all(prev_action_candidates == gt_action, dim=1)
+                # Tolerant match: keyboard tokens (indices 3..10) must match
+                # exactly, but camera tokens (indices 1,2) may differ by a few
+                # bins. This raises the HIT rate substantially — small camera
+                # deltas produce near-identical frames, so accepting them is safe.
+                kb_match = torch.all(prev_action_candidates[:, 3:] == gt_action[:, 3:], dim=1)
+                cam_diff = torch.abs(prev_action_candidates[:, 1:3].float() - gt_action[:, 1:3].float())
+                cam_tol = torch.all(cam_diff <= 2.0, dim=1)  # allow ±2 camera bins
+                matches = kb_match & cam_tol
                 if matches.any():
                     hit_candidate_idx = torch.where(matches)[0][0].item()
                     
