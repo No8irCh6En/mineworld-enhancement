@@ -1153,14 +1153,19 @@ def speculative_img_diagd_decode_n_tokens(
         len0 = input_0.shape[1]
         len1 = input_1.shape[1] if spec_active else 0
         
-        if spec_active:
+        # Only do packed forward when the spec stream actually has tokens to
+        # decode (its row list is non-empty). After the async-stream change,
+        # spec_active may be True but its row list is empty (draft frame already
+        # prefilled) — in that case keep Main at batch=1.
+        spec_has_tokens = (len1 > 0)
+        if spec_has_tokens:
             # Packed forward: expand Main to batch K to match Spec.
             if input_0.shape[0] == 1:
                 input_0 = input_0.expand(input_1.shape[0], -1)
             packed_input = torch.cat([input_0, input_1], dim=1)
             packed_pos = torch.cat([pos_0, pos_1], dim=0)
         else:
-            # Spec inactive: Main-only forward at batch=1.
+            # Spec inactive or already done: Main-only forward at batch=1.
             packed_input = input_0
             packed_pos = pos_0
         
