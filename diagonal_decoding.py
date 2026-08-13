@@ -1184,6 +1184,11 @@ def speculative_img_diagd_decode_n_tokens(
                 top_k=top_k,
                 top_p=top_p,
             )
+            if not hasattr(speculative_img_diagd_decode_n_tokens, "_decode_time"):
+                speculative_img_diagd_decode_n_tokens._decode_time = 0.0
+                speculative_img_diagd_decode_n_tokens._decode_calls = 0
+            speculative_img_diagd_decode_n_tokens._decode_time += time.perf_counter() - start_time
+            speculative_img_diagd_decode_n_tokens._decode_calls += 1
                 
             
             if len0 > 0:
@@ -1342,6 +1347,10 @@ def speculative_img_diagd_decode_n_tokens(
              frame_completed = True
              # Do NOT restart here — restart happens after verification at loop top.
 
+    if os.environ.get("DIAGD_DEBUG", "0") == "1":
+        d = speculative_img_diagd_decode_n_tokens._decode_time
+        c = speculative_img_diagd_decode_n_tokens._decode_calls
+        print(f"[PROFILE] total decode time={d:.3f}s, calls={c}, avg={d/max(1,c)*1000:.2f}ms/call")
     return all_tokens_main[1:]
 
 DIAG_SCHEDULE_CACHE: Dict[Tuple[int, int], Dict[str, Any]] = {}

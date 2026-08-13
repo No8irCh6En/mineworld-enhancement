@@ -1471,11 +1471,8 @@ class LlamaForCausalLM(PreTrainedModel):
         
         if draft_func is None or action_pred_func is None:
             draft_func, action_pred_func = get_inference_functions()
-        # NOTE: speculative decoding feeds the model with VARYING shapes
-        # (Main batch=1 vs Main+Spec batch=1+K, different diagonal lengths).
-        # torch.compile with dynamic shapes on a 20-layer transformer has huge
-        # compile overhead for every distinct shape. Run uncompiled for now to
-        # verify correctness; compile optimizations come later.
+        # draft_func / action_pred_func contain Python loops, numpy, dict lookups
+        # — NOT compilable. Leave them eager. Only compile the big-model decode.
         self.draft_func = draft_func
         self.action_pred_func = action_pred_func
         self.prefill = prefill
@@ -1483,7 +1480,10 @@ class LlamaForCausalLM(PreTrainedModel):
         # Concatenate the first action to the input, matching img_diagd_generate behavior
         input_ids = torch.cat([input_ids, action_all[0].view(1, -1)], dim=-1)
         position_ids = torch.arange(0, input_ids.shape[1], device="cuda")
-        self.decode_some_token = torch.compile(decode_some_token, fullgraph=True, dynamic=True)
+        # After the async-stream change, Main decodes at batch=1 with a limited
+        # set of diagonal lengths — same shape profile as the baseline, so
+        # max-autotune (fast kernels) works without compile explosion.
+        self.decode_some_token = torch.compile(decode_some_token, mode="max-autotune", fullgraph=True)
         
         generated_tokens = speculative_img_diagd_decode_n_tokens(
             self, input_ids, position_ids, num_generate_tokens=max_new_tokens,
