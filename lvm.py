@@ -1496,13 +1496,6 @@ class LlamaForCausalLM(PreTrainedModel):
         # generated_tokens is list[list[int]] from speculative_img_diagd_decode_n_tokens.
         # Flatten into a single 1D tensor (matching img_diagd_generate's return convention).
         flat_tokens = []
-        if os.environ.get("DIAGD_DEBUG", "0") == "1":
-            print(f"[FLATTEN] generated_tokens has {len(generated_tokens)} seqs")
-            for i, seq in enumerate(generated_tokens):
-                if isinstance(seq, list):
-                    print(f"  seq[{i}] len={len(seq)}")
-                elif isinstance(seq, torch.Tensor):
-                    print(f"  seq[{i}] tensor shape={seq.shape}")
         for seq in generated_tokens:
             if isinstance(seq, list):
                 flat_tokens.extend(seq)

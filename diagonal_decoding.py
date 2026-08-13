@@ -981,7 +981,6 @@ def speculative_img_diagd_decode_n_tokens(
                 # generated 335 tokens (its first position is occupied by the
                 # prefill'd action/draft context). Pad to 336 if needed.
                 spec_frame = new_tokens_spec[hit_candidate_idx]
-                print(f"[TOKEN-DEBUG] HIT spec_frame numel={spec_frame.numel()}, draft_first_tokens={draft_first_tokens is not None}")
                 if spec_frame.numel() > 0:
                     if spec_frame.numel() == pixnum - 1 and draft_first_tokens is not None:
                         first_tok = draft_first_tokens[hit_candidate_idx].view(1)
@@ -1323,7 +1322,6 @@ def speculative_img_diagd_decode_n_tokens(
              # frames already accumulate all 336 tokens.
              if new_tokens_main:
                  frame_tokens = torch.cat(new_tokens_main, dim=0).tolist()
-                 print(f"[TOKEN-DEBUG] flush frame_tokens={len(frame_tokens)}, state_0_len={state_0_len}")
                  # First frame: state_0_len reached pixnum, prefill token separate
                  if len(frame_tokens) == pixnum - 1 and first_pixel_token is not None:
                      frame_tokens = [int(first_pixel_token.squeeze().item())] + frame_tokens
