@@ -56,3 +56,9 @@ PROJECT_INTRO.md
 
 # ===== Legacy =====
 legacy/
+
+# 会话记录大文件（仅本地参考，不进 git）
+docs/memory/old_chat.json
+docs/memory/old_chat_fixed.json
+docs/memory/old_chat.md
+docs/memory/participant_msgs.txt
