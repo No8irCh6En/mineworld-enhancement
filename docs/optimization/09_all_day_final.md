@@ -77,6 +77,18 @@
 1. **异步流** ✅ 已实现：spec 不再用大模型重解码，HIT 直接接受 draft 帧。
 2. **尾部容错** ✅ 已实现：camera ±2 bin 容错匹配 + draft 帧直接接受（draft 前面的对角线准，尾部误差容忍）。
 
+## 已知限制与未来优化方向
+
+### 1. HIT 跳帧不彻底（已诊断，未修复）
+
+HIT 时 `state_0_len += pixnum` 计数跳帧，但 `imagenum_main += 1` 让 Main 仍解码被接受的帧（frame_offset 指向被跳帧）。正确应为 `imagenum_main += 2`，但该改动触发 CUDA assert（KV cache 位置冲突），需要进一步梳理投机状态机的语义后才能安全修复。
+
+### 2. 要超越 baseline 的路径
+
+1. **修复 HIT 跳帧**：`imagenum_main += 2`（需解决 KV cache 语义）
+2. **HIT 率 > 85%**：更好的 action predictor
+3. **draft < 0.02s**：token-level draft（省 VAE decode + depth）
+
 ## 文档
 
-`docs/optimization/` 8 篇技术文档，完整记录优化历程。
+`docs/optimization/` 9 篇技术文档，完整记录优化历程。
