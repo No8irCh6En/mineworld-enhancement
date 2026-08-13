@@ -389,7 +389,12 @@ def lvm_generate(args, model, output_dir, demo_video):
             all_generated_tokens = []
              
     input_len = image_input.numel()
-    generated_len = len(all_generated_tokens) - input_len
+    # NOTE: speculative_diag_generate_img_token returns ONLY the generated pixel
+    # tokens (the demo frame is excluded inside all_tokens_main[0]), so the
+    # generated count is just len(all_generated_tokens).
+    generated_len = len(all_generated_tokens)
+    if os.environ.get("TOKEN_DEBUG", "0") == "1":
+        print(f"[TOKEN-DEBUG] len(all_generated_tokens)={len(all_generated_tokens)}, input_len={input_len}, generated_len={generated_len}")
     
     end_t = time.time()
     time_costed = end_t - start_t
