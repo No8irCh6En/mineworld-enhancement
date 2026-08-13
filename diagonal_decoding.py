@@ -1393,6 +1393,12 @@ def speculative_img_diagd_decode_n_tokens(
              # frame. For the FIRST frame, prepend the prefill token (stored in
              # all_tokens_main[1]) to the 335 accumulated tokens. Subsequent
              # frames already accumulate all 336 tokens.
+             if os.environ.get("PROFILE", "0") == "1":
+                 _now = time.perf_counter()
+                 if not hasattr(speculative_img_diagd_decode_n_tokens, "_last_frame_t"):
+                     speculative_img_diagd_decode_n_tokens._last_frame_t = _now
+                 print(f"[FRAME] frame done at state_0_len={state_0_len}, frame_time={_now - speculative_img_diagd_decode_n_tokens._last_frame_t:.4f}s")
+                 speculative_img_diagd_decode_n_tokens._last_frame_t = _now
              if new_tokens_main:
                  frame_tokens = torch.cat(new_tokens_main, dim=0).tolist()
                  # First frame: state_0_len reached pixnum, prefill token separate
