@@ -923,13 +923,15 @@ def speculative_img_diagd_decode_n_tokens(
     loop_counter = 0
     draft_first_tokens = None  # [K] first pixel token of each draft candidate (for HIT reconstruction)
     draft_full_frames = None  # [K, 336] complete draft frames, used directly on HIT (spec does NOT re-decode)
+    # Cache frequently-used locals to reduce Python attribute lookups in the hot loop
+    _DEBUG_ENV = os.environ.get("DIAGD_DEBUG", "0") == "1"
 
     while True:
         loop_counter += 1
         if state_0_len >= num_generate_tokens:
             break
         
-        if os.environ.get("DIAGD_DEBUG", "0") == "1" and loop_counter % 10 == 0:
+        if _DEBUG_ENV and loop_counter % 10 == 0:
             print(f"[LOOP] iter={loop_counter} state_0_len={state_0_len} state_1_len={state_1_len} row0={state_row_lists[0]} row1={state_row_lists[1]} frame_completed={frame_completed} spec_active={spec_active} draft_done={(state_1_len % pixnum == 0)}")
         
         # --- Frame Boundary & Sync Logic ---
@@ -949,7 +951,7 @@ def speculative_img_diagd_decode_n_tokens(
         
         if main_frame_done and main_active_now:
             iter_end_time = time.perf_counter()
-            if os.environ.get("DIAGD_DEBUG", "0") == "1":
+            if _DEBUG_ENV:
                 print(f"[HINT] one frame( or two) time: {iter_end_time - iter_start_time:.6f} seconds")
             iter_start_time = time.perf_counter()
             # --- Verification ---
