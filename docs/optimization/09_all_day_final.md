@@ -77,22 +77,35 @@
 1. **异步流** ✅ 已实现：spec 不再用大模型重解码，HIT 直接接受 draft 帧。
 2. **尾部容错** ✅ 已实现：camera ±2 bin 容错匹配 + draft 帧直接接受（draft 前面的对角线准，尾部误差容忍）。
 
+## 关键实验发现
+
+### 1. 速度不依赖 HIT 率（串行投机）
+
+实验：CAM_TOL=0（HIT 4/15）vs CAM_TOL=2（HIT 10/15），速度都是 2.66 fps。
+
+**结论**：HIT 跳帧省的时间 ≈ MISS 的 draft 开销，两者抵消。因为 draft 预测和 Main 解码是**串行**的（draft 预测帧 T+1 后 Main 仍解码帧 T+1），跳帧收益被 draft 开销抵消。
+
+### 2. 质量-容错权衡
+
+| CAM_TOL | PSNR vs GT | HIT 率 | 速度 |
+|---------|-----------|--------|------|
+| 0（严格） | 18.97 dB | 4/15 | 2.66 fps |
+| 1 | 17.04 dB | 10/15 | 2.66 fps |
+| 2 | 17.01 dB | 10/15 | 2.66 fps |
+
+质量损失主要来自"接受 draft 帧"（小模型预测），而非容错幅度。
+
 ## 已知限制与未来优化方向
 
-### 1. HIT 跳帧不彻底（已诊断，未修复）
+### 1. 串行投机（根本限制）
 
-HIT 时 `state_0_len += pixnum` 计数跳帧，但 Main 仍解码被接受的帧。根因是 draft 预测和 Main 解码是**串行**的（draft 预测帧 T+1 后，Main 立即解码帧 T+1，draft 的像素预测被覆盖）。正确需要流水线化：Main 解码帧 T 时 draft 并行预测帧 T+1，帧 T 完成后 HIT 则跳过 T+1。
+draft 预测和 Main 解码串行，draft 的像素预测被 Main 重新解码覆盖。需要流水线化：Main 解码帧 T 时 draft 并行预测帧 T+1。
 
-### 2. 已验证的正确性
-
-- 15 帧：2.66 fps，PSNR vs GT = 18.14 dB（baseline 18.58，仅差 0.44 dB）
-- 20 帧：0.28 fps（首 demo 含编译），视频正常，无报错
-
-### 3. 要超越 baseline 的路径
+### 2. 要超越 baseline 的路径
 
 1. **流水线化投机**：draft 与 Main 真正并行
-2. **HIT 率 > 85%**：更好的 action predictor
-3. **draft < 0.02s**：token-level draft
+2. **draft < 0.02s**：token-level draft
+3. **HIT 帧用大模型轻量验证**：平衡质量
 
 ## 文档
 
