@@ -893,6 +893,7 @@ def speculative_img_diagd_decode_n_tokens(
     frame_completed = False  # set True when Main finishes a frame (row list becomes empty)
     loop_counter = 0
     draft_first_tokens = None  # [K] first pixel token of each draft candidate (for HIT reconstruction)
+    draft_full_frames = None  # [K, 336] complete draft frames, used directly on HIT (spec does NOT re-decode)
 
     while True:
         loop_counter += 1
@@ -977,17 +978,21 @@ def speculative_img_diagd_decode_n_tokens(
                 spec_active = False 
                 state_1_len = 0
                 current_step = 0
-                # Reconstruct the full 336-token frame. The spec stream may have
-                # generated 335 tokens (its first position is occupied by the
-                # prefill'd action/draft context). Pad to 336 if needed.
-                spec_frame = new_tokens_spec[hit_candidate_idx]
-                if spec_frame.numel() > 0:
-                    if spec_frame.numel() == pixnum - 1 and draft_first_tokens is not None:
-                        first_tok = draft_first_tokens[hit_candidate_idx].view(1)
-                        full_frame = torch.cat([first_tok, spec_frame], dim=0)
-                    else:
-                        full_frame = spec_frame
-                    all_tokens_main.append(full_frame.tolist())
+                # HIT: accept the draft's complete frame directly (no big-model
+                # re-decode). This is the core speculative win — the draft model
+                # proposed the whole frame in ONE forward pass.
+                if draft_full_frames is not None:
+                    all_tokens_main.append(draft_full_frames[hit_candidate_idx].tolist())
+                else:
+                    # Fallback: reconstruct from spec stream tokens (legacy path)
+                    spec_frame = new_tokens_spec[hit_candidate_idx]
+                    if spec_frame.numel() > 0:
+                        if spec_frame.numel() == pixnum - 1 and draft_first_tokens is not None:
+                            first_tok = draft_first_tokens[hit_candidate_idx].view(1)
+                            full_frame = torch.cat([first_tok, spec_frame], dim=0)
+                        else:
+                            full_frame = spec_frame
+                        all_tokens_main.append(full_frame.tolist())
                 
                 new_tokens_main = []
                 new_tokens_spec = [[] for _ in range(num_candidates)]
@@ -1065,8 +1070,10 @@ def speculative_img_diagd_decode_n_tokens(
                 prev_tokens = torch.as_tensor(all_tokens_main[-1], device="cuda")
                 print(f"[DEBUG] prev_tokens shape: {prev_tokens.shape}, action_candidates shape: {next_action_candidates.shape}")
                 
-                draft_input_ids = draft_func(all_tokens_main[-1], next_action_candidates)
-                # Save the first pixel token of each draft candidate (HIT reconstruction)
+                draft_input_ids = draft_func(all_tokens_main[-1], next_action_candidates, merge=False)
+                # Save the complete draft frame (all 336 tokens). On HIT we accept
+                # this frame directly instead of re-decoding it with the big model.
+                draft_full_frames = draft_input_ids.clone()  # [K, 336]
                 draft_first_tokens = draft_input_ids[:, 0].clone()  # [K]
                 # draft_pos = torch.arange(action_start_pos + actnum, action_start_pos + actnum + pixnum, device="cuda").unsqueeze(0)
                 draft_pos = torch.arange(action_start_pos + actnum, action_start_pos + actnum + pixnum, device="cuda")
@@ -1117,16 +1124,16 @@ def speculative_img_diagd_decode_n_tokens(
                     # Fallback until the first speculative action prediction is ready.
                     state_1_last_tokens_setup = torch.zeros((num_candidates, 1), device="cuda", dtype=torch.long)
                 spec_active = True
+                # ASYNC OPTIMIZATION: the draft model already proposed the FULL
+                # frame and it was prefilled into the spec KV cache. We do NOT
+                # re-decode it with the big model. Mark the spec stream as
+                # immediately done (empty row list) so the frame boundary triggers
+                # verification right away; HIT accepts the draft frame directly.
                 state_row_tokens_lists[1].zero_()
-                state_row_lists[1] = [0]
+                state_row_lists[1] = []
                 state_row_last_tokens[1] = [None for _ in range(rownum)]
-                state_1_len = 0
+                state_1_len = pixnum  # mark spec frame complete
                 ptr_heads[1] = 0
-                # 关键：让 spec 从 action 的最后一个 token 开始
-                state_row_tokens_lists[1][0] += 1
-                state_row_last_tokens[1][0] = state_1_last_tokens_setup
-                if state_row_tokens_lists[1][0] == windowsize and state_row_lists[1][0] < rownum - 1:
-                    state_row_lists[1].append(1)
 
 
         # --- Prepare Inputs (Mixed) ---
