@@ -808,6 +808,71 @@ def speculative_img_diagd_prepare_inputs(
     return input_0, pos_0, input_1, pos_1
 
 
+def _update_stream_state(ptr_heads, state_row_lists, state_row_tokens_lists,
+                         row_counts_cpu, rownum,
+                         idx, schedule, next_tokens_stream, result_accum, last_tokens_list):
+    """Update one stream's state after a decode step. Extracted from the hot
+    loop to avoid redefining the function object on every iteration."""
+    if next_tokens_stream is None:
+        return 0
+
+    total_steps = next_tokens_stream.shape[1]
+    plan_len = schedule["length"]
+
+    ptr = ptr_heads[idx]
+    steps = min(total_steps, plan_len - ptr)
+    if steps <= 0:
+        return 0
+
+    working_stream = next_tokens_stream[:, :steps, ...]
+
+    plan_rows = schedule["plan_rows"]
+    row_ids = plan_rows[ptr : ptr + steps]
+
+    if working_stream.dim() > 2:
+        stream_chunks = working_stream.permute(1, 0, *range(2, working_stream.dim()))
+    else:
+        stream_chunks = working_stream.permute(1, 0)
+
+    if idx == 0:
+        for offset, row_id in enumerate(row_ids):
+            chunk = stream_chunks[offset]
+            chunk = chunk[0].reshape(1)  # Main's token only, shape [1]
+            row_pos = row_counts_cpu[row_id]  # running count before increment
+            prev_total = sum(row_counts_cpu[:row_id])
+            insert_pos = prev_total + row_pos
+            result_accum.insert(insert_pos, chunk)  # already cloned in bulk
+            row_counts_cpu[row_id] += 1  # increment AFTER insert
+    else:
+        for cand_idx, cand_tokens in enumerate(working_stream.unbind(0)):
+            if cand_idx >= len(result_accum):
+                result_accum.append([])
+            result_accum[cand_idx].extend([tok.view(1).clone() for tok in cand_tokens.unbind(0)])
+
+    # Update last_tokens_list for all rows processed in this step
+    for offset, row_id in enumerate(row_ids):
+        chunk = stream_chunks[offset]
+        if idx == 0:
+            chunk = chunk[:1].contiguous()
+        last_tokens_list[row_id] = chunk
+
+    rows_after = schedule["rows_state"][ptr + steps]
+    rows_ref = state_row_lists[idx]
+    rows_ref[:] = list(rows_after)
+
+    if rows_after:
+        keep = set(rows_after)
+        for r in range(len(last_tokens_list)):
+            if r not in keep:
+                last_tokens_list[r] = None
+    else:
+        for r in range(len(last_tokens_list)):
+            last_tokens_list[r] = None
+
+    ptr_heads[idx] = ptr + steps
+    return steps
+
+
 def speculative_img_diagd_decode_n_tokens(
     model,
     input_ids: torch.Tensor, 
@@ -1255,76 +1320,6 @@ def speculative_img_diagd_decode_n_tokens(
             
         current_step += 1 
 
-        def _update_stream_state(idx, schedule, next_tokens_stream, result_accum, last_tokens_list):
-            if next_tokens_stream is None:
-                return 0
-
-            total_steps = next_tokens_stream.shape[1]
-            plan_len = schedule["length"]
-
-            ptr = ptr_heads[idx]
-            steps = min(total_steps, plan_len - ptr)
-            if steps <= 0:
-                return 0
-
-            working_stream = next_tokens_stream[:, :steps, ...]
-
-            # Compute row_ids and stream_chunks before using them below
-            plan_rows = schedule["plan_rows"]
-            row_ids = plan_rows[ptr : ptr + steps]
-
-            if working_stream.dim() > 2:
-                stream_chunks = working_stream.permute(1, 0, *range(2, working_stream.dim()))
-            else:
-                stream_chunks = working_stream.permute(1, 0)
-
-            if idx == 0:
-                # Insert tokens at correct row-major positions, matching
-                # img_diagd_decode_n_tokens: compute position from per-frame
-                # running counts, insert, THEN increment the count.
-                # NOTE: state_row_tokens_lists[idx] is a GPU tensor; calling
-                # .item() on it forces a GPU->CPU sync EVERY token (the dominant
-                # cost). Keep a CPU-side mirror to avoid syncs.
-                if not hasattr(speculative_img_diagd_decode_n_tokens, "_row_counts_cpu"):
-                    speculative_img_diagd_decode_n_tokens._row_counts_cpu = [0] * rownum
-                row_counts_cpu = speculative_img_diagd_decode_n_tokens._row_counts_cpu
-                for offset, row_id in enumerate(row_ids):
-                    chunk = stream_chunks[offset]
-                    chunk = chunk[0].reshape(1)  # Main's token only, shape [1]
-                    row_pos = row_counts_cpu[row_id]  # running count before increment
-                    prev_total = sum(row_counts_cpu[:row_id])
-                    insert_pos = prev_total + row_pos
-                    result_accum.insert(insert_pos, chunk)  # already cloned in bulk
-                    row_counts_cpu[row_id] += 1  # increment AFTER insert
-            else:
-                for cand_idx, cand_tokens in enumerate(working_stream.unbind(0)):
-                    if cand_idx >= len(result_accum):
-                        result_accum.append([])
-                    result_accum[cand_idx].extend([tok.view(1).clone() for tok in cand_tokens.unbind(0)])
-
-            # Update last_tokens_list for all rows processed in this step
-            for offset, row_id in enumerate(row_ids):
-                chunk = stream_chunks[offset]
-                if idx == 0:
-                    chunk = chunk[:1].contiguous()
-                last_tokens_list[row_id] = chunk
-
-            rows_after = schedule["rows_state"][ptr + steps]
-            rows_ref = state_row_lists[idx]
-            rows_ref[:] = list(rows_after)
-
-            if rows_after:
-                keep = set(rows_after)
-                for r in range(len(last_tokens_list)):
-                    if r not in keep:
-                        last_tokens_list[r] = None
-            else:
-                for r in range(len(last_tokens_list)):
-                    last_tokens_list[r] = None
-
-            ptr_heads[idx] = ptr + steps
-            return steps
-
         # --- Update States ---
         
         # 1. Update Main State
@@ -1332,7 +1327,10 @@ def speculative_img_diagd_decode_n_tokens(
         if main_active_now:
             schedule_main = diag_schedules[0]
             prev_0_len = state_0_len
-            added_len = _update_stream_state(0, schedule_main, next_tokens_0, new_tokens_main, state_row_last_tokens[0])
+            added_len = _update_stream_state(
+                ptr_heads, state_row_lists, state_row_tokens_lists,
+                speculative_img_diagd_decode_n_tokens._row_counts_cpu, rownum,
+                0, schedule_main, next_tokens_0, new_tokens_main, state_row_last_tokens[0])
             state_0_len += added_len
             if not hasattr(speculative_img_diagd_decode_n_tokens, "_update_time"):
                 speculative_img_diagd_decode_n_tokens._update_time = 0.0
