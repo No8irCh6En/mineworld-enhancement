@@ -1045,7 +1045,7 @@ def speculative_img_diagd_decode_n_tokens(
                 # deltas produce near-identical frames, so accepting them is safe.
                 kb_match = torch.all(prev_action_candidates[:, 3:] == gt_action[:, 3:], dim=1)
                 cam_diff = torch.abs(prev_action_candidates[:, 1:3].float() - gt_action[:, 1:3].float())
-                cam_tol = torch.all(cam_diff <= 2.0, dim=1)  # allow ±2 camera bins
+                cam_tol = torch.all(cam_diff <= float(os.environ.get("CAM_TOL", "2")), dim=1)
                 matches = kb_match & cam_tol
                 if matches.any():
                     hit_candidate_idx = torch.where(matches)[0][0].item()
