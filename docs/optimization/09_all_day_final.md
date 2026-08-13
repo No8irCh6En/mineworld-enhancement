@@ -81,13 +81,18 @@
 
 ### 1. HIT 跳帧不彻底（已诊断，未修复）
 
-HIT 时 `state_0_len += pixnum` 计数跳帧，但 `imagenum_main += 1` 让 Main 仍解码被接受的帧（frame_offset 指向被跳帧）。正确应为 `imagenum_main += 2`，但该改动触发 CUDA assert（KV cache 位置冲突），需要进一步梳理投机状态机的语义后才能安全修复。
+HIT 时 `state_0_len += pixnum` 计数跳帧，但 Main 仍解码被接受的帧。根因是 draft 预测和 Main 解码是**串行**的（draft 预测帧 T+1 后，Main 立即解码帧 T+1，draft 的像素预测被覆盖）。正确需要流水线化：Main 解码帧 T 时 draft 并行预测帧 T+1，帧 T 完成后 HIT 则跳过 T+1。
 
-### 2. 要超越 baseline 的路径
+### 2. 已验证的正确性
 
-1. **修复 HIT 跳帧**：`imagenum_main += 2`（需解决 KV cache 语义）
+- 15 帧：2.66 fps，PSNR vs GT = 18.14 dB（baseline 18.58，仅差 0.44 dB）
+- 20 帧：0.28 fps（首 demo 含编译），视频正常，无报错
+
+### 3. 要超越 baseline 的路径
+
+1. **流水线化投机**：draft 与 Main 真正并行
 2. **HIT 率 > 85%**：更好的 action predictor
-3. **draft < 0.02s**：token-level draft（省 VAE decode + depth）
+3. **draft < 0.02s**：token-level draft
 
 ## 文档
 
