@@ -9,8 +9,19 @@
 | 指标 | baseline | speculative（优化后） |
 |------|---------|------|
 | 视频生成 | ✅ 15帧 | ✅ 15帧（修复 token 计数后） |
-| FPS（第2 demo） | 2.81 | 1.20 |
+| FPS（第2 demo） | 2.79 | **1.62** |
 | HIT 率 | — | 60%（9/15） |
+
+### 速度演进时间线（第二 demo FPS）
+
+| 阶段 | FPS | 改动 |
+|------|-----|------|
+| 投机逻辑首次跑通 | 0.42 | 修复 8 个 bug |
+| + 去 SDPBackend.MATH | 1.20 | 用默认 Flash Attention |
+| + 异步流（spec 不重解码） | 1.43 | HIT 直接接受 draft 帧 |
+| + merge=False（去 VAE merge） | **1.62** | 用 raw draft token |
+
+累计从 0.42 提升到 1.62 fps（+286%），但仍低于 baseline 2.79 fps（还差 42%）。
 
 ## 修复的 Bug 清单（按时间顺序）
 
