@@ -733,11 +733,9 @@ def speculative_img_diagd_prepare_inputs(
 
         _ensure_cache_size(max(row_list) + 1)
 
+        _t0 = time.perf_counter()
         pos_ids, inputs = [], []
         for r in row_list:
-            # global_idx must be a plain Python int to avoid GPU->CPU sync.
-            # row_tok[r] may be a GPU scalar tensor — convert via int() ONLY
-            # if it is a tensor; otherwise it is already a Python int.
             rt = row_tok[r]
             if torch.is_tensor(rt):
                 rt = int(rt.item())
@@ -762,12 +760,25 @@ def speculative_img_diagd_prepare_inputs(
                     prev = last_tok[r - 1] if r - 1 >= 0 else None
                     token = prev if prev is not None else default
                 inputs.append(token)
-
+        _t1 = time.perf_counter()
         input_tensor = torch.cat(inputs, dim=1)
-        pos_tensor = torch.tensor(pos_ids, dtype=torch.long, device="cuda")
+        _t1b = time.perf_counter()
+        # Reuse a pre-allocated GPU buffer for pos_ids to avoid the slow
+        # torch.tensor(list, device="cuda") path (CUDA malloc + H2D + sync).
+        n = len(pos_ids)
+        fn = speculative_img_diagd_prepare_inputs
+        buf = getattr(fn, "_pos_buf", None)
+        if buf is None or buf.numel() < n:
+            buf = torch.empty(max(n, 64), dtype=torch.long, device="cuda")
+            fn._pos_buf = buf
+        pos_tensor = buf[:n]
+        pos_tensor.copy_(torch.as_tensor(pos_ids, dtype=torch.long), non_blocking=True)
+        _t2 = time.perf_counter()
+        if os.environ.get("PROFILE", "0") == "1":
+            if not hasattr(fn, "_loop_time"): fn._loop_time = 0.0; fn._cat_time = 0.0; fn._pos_time = 0.0; fn._cnt = 0
+            fn._loop_time += (_t1 - _t0); fn._cat_time += (_t1b - _t1); fn._pos_time += (_t2 - _t1b); fn._cnt += 1
 
         return input_tensor, pos_tensor
-
     # === 1. Prepare Main Stream (Batch 0, Frame T) ===
     if _DEBUG:
         print("---------Main Stream Preparation---------")
@@ -788,6 +799,11 @@ def speculative_img_diagd_prepare_inputs(
         frame_offset=promptlen + imagenum_main * (pixnum + actnum),
         b_size=spec_batch_size
     )
+
+    if os.environ.get("PROFILE", "0") == "1":
+        fn = speculative_img_diagd_prepare_inputs
+        if hasattr(fn, "_cnt") and fn._cnt > 0 and fn._cnt % 500 == 0:
+            print(f"[PREP-PROFILE] loop={fn._loop_time:.3f}s cat={fn._cat_time:.3f}s pos={fn._pos_time:.3f}s cnt={fn._cnt}")
 
     return input_0, pos_0, input_1, pos_1
 
@@ -1382,7 +1398,7 @@ def speculative_img_diagd_decode_n_tokens(
              frame_completed = True
              # Do NOT restart here — restart happens after verification at loop top.
 
-    if os.environ.get("DIAGD_DEBUG", "0") == "1":
+    if os.environ.get("PROFILE", "0") == "1":
         d = speculative_img_diagd_decode_n_tokens._decode_time
         c = speculative_img_diagd_decode_n_tokens._decode_calls
         p = speculative_img_diagd_decode_n_tokens._prep_time
