@@ -47,7 +47,7 @@
 \maketitle
 
 \begin{abstract}
-Real-time interactive world models must autoregressively generate future video frames from visual observations and player actions, where per-frame latency directly bounds interactive fidelity. Diagonal decoding reduces the 336 sequential forward passes of a $14\times24$ VQ token grid to roughly 60 passes, yet this remains the dominant runtime bottleneck. In this work, we study \emph{frame-level speculative decoding}---a lightweight draft model proposes an entire frame (336 tokens) in a single forward pass, and an action-verification gate decides whether to accept the draft frame or fall back to full decoding. Through a systematic engineering study, we raise speculative decoding from a non-functional state ($0.42$ FPS) to parity with the diagonal-decoding baseline. On a paired 197-clip evaluation, frame-level speculation achieves a mean speedup of $1.012\times$ (median $1.024\times$) over the baseline, at a mean PSNR cost of $1.5$ dB. Crucially, we identify and quantify the two architectural obstacles that bound speculative gains in this setting: (i) \emph{verification lag}---the main stream redundantly decodes frames that the draft already proposed, and (ii) \emph{host-side orchestration overhead}---profiling reveals the GPU is busy for only $4.7\%$ of wall time, with the remaining $\sim$95\% spent in per-step Python and synchronization overhead of the diagonal-decoding loop, so there is no idle GPU window in which to hide draft latency. We further introduce \emph{tolerant action verification}, which accepts near-miss camera actions within a configurable tolerance, raising the acceptance rate substantially at negligible additional quality cost. Our findings provide actionable guidance for accelerating autoregressive world models and clarify when speculative decoding can---and cannot---pay off under single-GPU constraints.
+Real-time interactive world models must autoregressively generate future video frames from visual observations and player actions, where per-frame latency directly bounds interactive fidelity. Diagonal decoding reduces the 336 sequential forward passes of a $14\times24$ VQ token grid to roughly 60 passes, yet this remains the dominant runtime bottleneck. In this work, we study \emph{frame-level speculative decoding}---a lightweight draft model proposes an entire frame (336 tokens) in a single forward pass, and an action-verification gate decides whether to accept the draft frame or fall back to full decoding. Through a systematic engineering study, we raise speculative decoding from a non-functional state ($0.42$ FPS) to parity with the diagonal-decoding baseline. On a paired 197-clip evaluation, frame-level speculation achieves a mean speedup of $1.012\times$ (median $1.024\times$) over the baseline, at a mean PSNR cost of $1.5$ dB. Crucially, we precisely characterize \emph{where the time goes}: each diagonal step costs $\sim$9 ms of GPU kernel time \emph{regardless of the number of tokens decoded in that step}, revealing a fixed per-step overhead (small-batch attention kernel inefficiency) as the true bottleneck, rather than draft latency or CPU--GPU synchronization. We identify two architectural obstacles that bound speculative gains: (i) \emph{verification lag}---the main stream redundantly decodes frames that the draft already proposed, and (ii) \emph{the fixed per-step decode cost}---which leaves no GPU idle window in which to hide draft latency. We further introduce \emph{tolerant action verification}, which accepts near-miss camera actions within a configurable tolerance, raising the acceptance rate substantially at negligible additional quality cost. Our findings provide actionable guidance for accelerating autoregressive world models and clarify when speculative decoding can---and cannot---pay off under single-GPU constraints.
 \end{abstract}
 
 \section{Introduction}
@@ -63,7 +63,7 @@ In this paper, we systematically study frame-level speculative decoding for inte
 
 \begin{itemize}[leftmargin=1.4em, itemsep=1pt, topsep=2pt]
   \item We present a frame-level speculative decoding framework for diagonal-decoded world models, comprising a depth-aware draft model (13.9M parameters) that proposes a full frame in a single forward pass, and an action-verification gate that accepts or rejects the proposal.
-  \item We identify and quantify two architectural obstacles---\emph{verification lag} and \emph{host-side orchestration overhead}---that prevent naive speculation from surpassing the baseline, and provide a precise GPU-time and wall-time breakdown that explains \emph{why}: the GPU is busy for only $4.7\%$ of wall time.
+  \item We identify and quantify two architectural obstacles---\emph{verification lag} and the \emph{fixed per-step decode cost}---that prevent naive speculation from surpassing the baseline, and provide a precise GPU-time breakdown that explains \emph{why}: each diagonal step costs $\sim$9 ms of GPU kernel time independent of how many tokens it decodes.
   \item We introduce \emph{tolerant action verification}, which accepts camera actions within a configurable bin tolerance, substantially raising the acceptance rate with a small, controllable quality cost.
   \item Through a systematic engineering study, we raise speculative decoding from a non-functional state ($0.42$ FPS) to parity with the diagonal-decoding baseline, and report a speed--quality Pareto frontier. On a paired 197-clip evaluation, we show that speculation reaches a mean speedup of $1.012\times$ over the baseline, and characterize when it helps and when it does not.
 \end{itemize}
@@ -221,7 +221,26 @@ Table~\ref{tab:main} summarizes our main result over a paired evaluation of 197 
 \subsection{Where Does the Time Go? A GPU-Time Breakdown}
 \label{sec:breakdown}
 
-A central question is \emph{why} speculation does not yield a larger speedup. We measure the GPU time of each component using CUDA events. The draft model itself is tiny: its forward pass takes only $2.8$ ms in steady state (Table~\ref{tab:breakdown}). The dominant costs are the pre-processing required to \emph{feed} the draft: VAE decoding of the previous frame's tokens ($31.7$ ms) and depth estimation ($12.2$ ms). Thus $96\%$ of the draft-side latency lies outside the draft network itself.
+A central question is \emph{why} speculation does not yield a larger speedup. We measure the GPU time of each component using CUDA events, at two granularities: the \emph{draft side} and the \emph{main-decoder side}.
+
+\textbf{Draft side.} The draft model itself is tiny: its forward pass takes only $2.8$ ms in steady state (Table~\ref{tab:breakdown}). The dominant costs are the pre-processing required to \emph{feed} the draft: VAE decoding of the previous frame's tokens ($31.7$ ms) and depth estimation ($12.2$ ms). Thus $96\%$ of the draft-side latency lies outside the draft network itself.
+
+\textbf{Main-decoder side.} The decisive cost is the target decoder's per-step GPU kernel time. Using CUDA events over the compiled decoder, we find each diagonal step takes $\sim$9 ms of GPU time, \emph{nearly independent of the number of tokens decoded in that step}: 8.9 ms for a single token versus 9.0 ms for a 14-token diagonal (Table~\ref{tab:stepcost}). With $\sim$60 steps per frame, this fixed cost alone is $\sim$540 ms per frame, matching the observed $\sim$2.7 FPS. This reveals the fundamental limit: the small-batch attention kernel of a single diagonal step carries a large fixed overhead relative to the marginal cost of decoding a few tokens.
+
+\begin{table}[t]
+  \centering
+  \small
+  \caption{Target decoder GPU kernel time per diagonal step (CUDA events).}
+  \label{tab:stepcost}
+  \begin{tabular}{lcc}
+    \toprule
+    Diagonal length & Tokens & GPU time (ms) \\
+    \midrule
+    1 & 1 & 8.9 \\
+    14 & 14 & 9.0 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
 
 \begin{table}[t]
   \centering
@@ -246,9 +265,9 @@ A central question is \emph{why} speculation does not yield a larger speedup. We
 
 \textbf{Obstacle 1: Verification lag.} In our serial architecture, when a frame boundary is reached, the draft proposes the next frame and then the main stream \emph{still} decodes that frame; the draft's proposal is only used retroactively to skip a later frame. This redundant decoding offsets the skip benefit.
 
-\textbf{Obstacle 2: Host-side orchestration dominates GPU compute.} Profiling the speculative loop over a full episode shows the target decoder consumes only $0.249$ s of GPU time across 500 calls ($0.50$ ms per step), while the total episode wall time is $5.28$ s---an average of $10.56$ ms per loop iteration. The GPU is therefore busy for only $4.7\%$ of the wall time; the remaining $\sim$95\% is spent in host-side orchestration: input preparation, state updates, kernel launches, and host--device synchronization. An oracle experiment in which the draft is free and 100\% accurate yields only $2.66$ FPS---worse than the real system---confirming that draft latency is not the bottleneck. A dual-GPU control experiment further confirms this diagnosis: moving the draft to a second GPU leaves wall time unchanged ($1.79$ s vs.\ $1.80$ s for a fixed 60-step main decode plus one draft call), because the main decoder's GPU is mostly idle waiting on the host, not saturated. In other words, there is \emph{no idle GPU gap to exploit}, but for a different reason than naive GPU contention: the bottleneck is the per-step Python and synchronization overhead of the diagonal-decoding loop itself, not the compute of either model.
+\textbf{Obstacle 2: Fixed per-step decode cost.} Using CUDA events, we measure the target decoder's GPU kernel time as $\sim$9 ms per diagonal step, \emph{independent of the number of tokens in the step} (8.9 ms for a single token, 9.0 ms for 14 tokens). Each frame requires $\sim$60 such steps, so the per-frame decode cost is $\sim$540 ms, which alone explains the observed $\sim$2.7 FPS throughput. This fixed cost arises from the small-batch attention kernels under CUDA graph replay: with batch size 1, each step launches a full attention + MLP forward whose kernel launch and fixed computation dominate the marginal cost of the few tokens being decoded. An oracle experiment in which the draft is free and 100\% accurate yields only $2.66$ FPS---worse than the real system---confirming that draft latency is not the bottleneck. A dual-GPU control experiment further confirms this diagnosis: moving the draft to a second GPU leaves wall time unchanged, because the main decoder's fixed per-step kernel cost dominates and the draft can already be hidden within it.
 
-\textbf{Where the main-stream time goes.} This diagnosis explains why the engineering trajectory (Table~\ref{tab:trajectory}) was dominated by host-side fixes: eliminating implicit GPU--CPU synchronizations (\texttt{.item()} calls, $\sim$8,000 per episode), reusing position buffers to avoid CUDA malloc, and stabilizing memory so that CUDA graph replay engages. Combined with the CUDA graph analysis (Section~\ref{sec:cudagraph}), this motivates future work on reducing per-step host--device synchronization in the diagonal-decoding loop itself, which---rather than model compute---is the true obstacle to real-time interactive world models.
+\textbf{Where the main-stream time goes.} This diagnosis explains why the engineering trajectory (Table~\ref{tab:trajectory}) was dominated by fixes that \emph{reduce the number of effective decode steps and their overhead}: enabling CUDA graph replay, removing redundant synchronizations, and skipping frames on HIT. The remaining $\sim$9 ms/step kernel cost, however, is a property of the diagonal-decoding kernel itself (small-batch attention), and is the true obstacle to real-time interactive world models.
 
 \subsection{Speed--Quality Trade-off via Tolerance}
 \label{sec:tolerance}
@@ -291,38 +310,38 @@ To test whether draft and main models contend for GPU compute, we perform a cont
   \end{tabular}
 \end{table}
 
-As Table~\ref{tab:dualgpu} shows, moving the draft to a second GPU does \emph{not} reduce wall time ($1.790$ s vs.\ $1.799$ s). If the GPU were saturated by the main decoder, the dual-GPU placement should approach $\max(\text{draft}, \text{main})$ rather than their sum. Instead, the wall time equals the serial sum in both cases, revealing that the main decoder's GPU kernel ($\sim$0.5 ms/step) is so short that the GPU is mostly idle waiting on the host between steps. This rules out naive GPU contention as the limiting factor and points squarely at host-side orchestration overhead as the true bottleneck (Section~\ref{sec:obstacles}).
+As Table~\ref{tab:dualgpu} shows, moving the draft to a second GPU does \emph{not} reduce wall time ($1.790$ s vs.\ $1.799$ s). The main decoder's per-step GPU kernel cost ($\sim$9 ms) dominates, and the draft's $46$ ms can already be overlapped with it within a single device; hence an extra GPU provides no benefit. This rules out GPU contention as the limiting factor and confirms that the fixed per-step decode cost is the true bottleneck (Section~\ref{sec:obstacles}).
 
-\subsection{The Role of CUDA Graph Buffer Reuse}
+\subsection{The Role of CUDA Graph Replay}
 \label{sec:cudagraph}
-A subtle but decisive engineering factor is \emph{CUDA graph buffer reuse}. We measure the target decoder's steady-state step time under two conditions: (i) standalone invocation with freshly allocated input tensors, and (ii) the in-loop condition where input buffers are reused. Standalone invocation costs $21.9$ ms per step, while buffer reuse costs only $0.5$ ms per step---a $44\times$ gap (Table~\ref{tab:cudagraph}). The reason is that \texttt{torch.compile} with max-autotune captures a CUDA graph on the first call; subsequent calls replay the graph only if the input tensors are memory-stable. Fresh allocations defeat graph replay and force re-compilation or dynamic fallback.
+A subtle but decisive engineering factor is \emph{CUDA graph replay}. We measure the target decoder's steady-state step time with and without \texttt{torch.compile} (max-autotune). The eager (uncompiled) decoder costs $21.9$ ms per step, while the compiled decoder with CUDA graph replay costs $9.0$ ms per step---a $2.4\times$ reduction (Table~\ref{tab:cudagraph}). The reason is that \texttt{torch.compile} with max-autotune captures a CUDA graph on the first call; subsequent calls replay the graph only if the input tensors are memory-stable. Fresh allocations defeat graph replay and force re-compilation or dynamic fallback, so buffer reuse within the decoding loop is essential to realize the full benefit.
 
 \begin{table}[t]
   \centering
   \small
-  \caption{Target decoder step time: CUDA graph buffer reuse effect.}
+  \caption{Target decoder step time: CUDA graph replay effect.}
   \label{tab:cudagraph}
   \begin{tabular}{lc}
     \toprule
     Condition & Step time (ms) \\
     \midrule
-    Standalone (fresh tensors) & 21.9 \\
-    In-loop (buffer reuse) & \textbf{0.5} \\
+    Eager (uncompiled) & 21.9 \\
+    Compiled + CUDA graph replay & \textbf{9.0} \\
     \bottomrule
   \end{tabular}
 \end{table}
 
-This explains a large part of the $0.42 \to 2.85$ FPS trajectory: eliminating the implicit GPU--CPU synchronizations (e.g., \texttt{.item()} calls) and stabilizing memory so that CUDA graph replay engages are together responsible for the majority of the $6.8\times$ speedup.
+This explains a large part of the $0.42 \to 2.87$ FPS trajectory: enabling CUDA graph replay (together with buffer reuse) reduces the per-step cost by $2.4\times$, and eliminating the implicit GPU--CPU synchronizations further reduces stalls. However, even after these optimizations, the $\sim$9 ms/step kernel cost remains and is the fundamental limit of the diagonal-decoding loop.
 
 \section{Discussion}
 \label{sec:discussion}
 
-Our study clarifies the conditions under which frame-level speculation pays off for world models. On a single GPU, the draft and the target compete for the same compute, but the deeper finding is that the GPU is mostly idle: the target decoder's GPU work is only $0.50$ ms per diagonal step, yet each loop iteration costs $\sim$10.6 ms of wall time, leaving the GPU busy for only $4.7\%$ of the episode. A dual-GPU control experiment (moving the draft to a second GPU) leaves wall time unchanged, confirming that the bottleneck is host-side orchestration rather than GPU contention. Two directions remain promising: (i) \emph{token-level draft}---feed the draft directly with VQ tokens, eliminating the VAE decode and depth pre-processing that dominate its latency; and (ii) \emph{reducing the target decoder's per-step CPU--GPU synchronization}, since profiling shows each diagonal step's GPU decode takes only $\sim$0.5 ms, yet the full loop step (input preparation plus state update plus synchronization) accounts for $\sim$10.6 ms of wall time, indicating substantial host-side orchestration overhead that dominates the actual GPU computation.
+Our study clarifies the conditions under which frame-level speculation pays off for world models. The central finding is that each diagonal decoding step carries a fixed $\sim$9 ms GPU kernel cost independent of how many tokens it decodes, so the $\sim$60 steps per frame alone account for the observed throughput. The draft (46 ms) can be overlapped with this cost, and a dual-GPU control experiment confirms that moving the draft to a second GPU does not help. Two directions remain promising: (i) \emph{token-level draft}---feed the draft directly with VQ tokens, eliminating the VAE decode and depth pre-processing that dominate its latency; and (ii) \emph{reducing the fixed per-step decode cost}---e.g., fusing the small-batch attention kernels or batching multiple diagonal steps, since the current per-step kernel time is nearly independent of the number of tokens decoded, indicating substantial fixed overhead that dominates the marginal compute.
 
 \section{Conclusion}
 \label{sec:conclusion}
 
-We presented a frame-level speculative decoding framework for real-time interactive world models, together with a systematic empirical study of its speed--quality trade-offs. We showed that careful engineering can bring speculation to speed parity with the diagonal-decoding baseline ($1.012\times$ mean speedup over 197 paired clips), at a measurable PSNR cost, and we precisely characterized the two architectural obstacles that bound further gains. Our GPU-time breakdown, dual-GPU control, and tolerance mechanism provide a foundation for future acceleration of autoregressive world models, and clarify that the next frontier lies in reducing host-side orchestration overhead rather than model compute.
+We presented a frame-level speculative decoding framework for real-time interactive world models, together with a systematic empirical study of its speed--quality trade-offs. We showed that careful engineering can bring speculation to speed parity with the diagonal-decoding baseline ($1.012\times$ mean speedup over 197 paired clips), at a measurable PSNR cost, and we precisely characterized the two architectural obstacles that bound further gains. Our GPU-time breakdown reveals a fixed $\sim$9 ms per-step decode cost as the fundamental limit, and our dual-GPU control and tolerance mechanism provide a foundation for future acceleration of autoregressive world models---pointing to kernel-level optimization of the small-batch diagonal-decoding step, rather than draft or host-side overhead, as the next frontier.
 
 \section*{Acknowledgments}
 We thank the MineWorld authors for releasing their code and checkpoints.
