@@ -62,3 +62,9 @@ docs/memory/old_chat.json
 docs/memory/old_chat_fixed.json
 docs/memory/old_chat.md
 docs/memory/participant_msgs.txt
+
+# 论文实验数据（大文件，仅本地保留）
+exp_results/
+paper/*.aux
+paper/*.out
+paper/*.log
