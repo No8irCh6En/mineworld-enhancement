@@ -59,7 +59,7 @@ Real-time interactive world models autoregressively generate video frames from v
 \section{Introduction}
 \label{sec:intro}
 
-World models that simulate interactive environments in real time~\cite{mineworld} are a cornerstone of embodied AI. A visual--action autoregressive transformer ingests past frames and player actions, and predicts the evolution of the game world frame by frame. Because each frame is a $14\times24=336$ grid of VQ tokens, naive row-major autoregressive generation requires 336 sequential transformer forward passes per frame---far too slow for real-time interaction.
+World models that simulate interactive environments in real time---exemplified by action-conditioned video predictors for games~\cite{mineworld,genie,gamen,iris,unisim,diamond}---are a cornerstone of embodied AI. A visual--action autoregressive transformer ingests past frames and player actions, and predicts the evolution of the game world frame by frame. Because each frame is a $14\times24=336$ grid of discrete VQ tokens~\cite{vqvae,vqgan}, naive row-major autoregressive generation requires 336 sequential transformer forward passes per frame---far too slow for real-time interaction.
 
 Diagonal decoding~\cite{mineworld} exploits the 2-D spatial dependency structure of the token grid: tokens on the same anti-diagonal are mutually independent and can be predicted in parallel, reducing the number of sequential steps from 336 to 37 in the strict geometric schedule, or 33 with a windowed schedule. On an RTX 3090, this yields approximately $2.77$ FPS for a 300M-parameter model. The natural question---and the subject of this paper---is whether the remaining $\sim$33 sequential passes per frame are an intrinsic cost or an artifact that better inference could remove.
 
@@ -78,7 +78,7 @@ In this paper, rather than advocating for or against diagonal decoding, we take 
 \label{sec:background}
 
 \subsection{MineWorld World Model}
-MineWorld~\cite{mineworld} is a visual--action autoregressive world model for the Minecraft environment. Given a set of conditioning frames and a sequence of player actions (keyboard keys and camera deltas), the model predicts future frames. Each frame is tokenized by a VQ-VAE into a $14\times24$ grid of 336 discrete tokens, and the transformer predicts these tokens autoregressively. Figure~\ref{fig:worldmodel} shows a representative sequence of frames produced by the model, illustrating the Minecraft scenes it generates.
+MineWorld~\cite{mineworld} is a visual--action autoregressive world model for the Minecraft environment. Given a set of conditioning frames and a sequence of player actions (keyboard keys and camera deltas), the model predicts future frames. Each frame is tokenized by a VQ-VAE~\cite{vqvae} into a $14\times24$ grid of 336 discrete tokens, and the transformer predicts these tokens autoregressively. Figure~\ref{fig:worldmodel} shows a representative sequence of frames produced by the model, illustrating the Minecraft scenes it generates.
 
 \begin{figure}[!ht]
   \centering
@@ -96,11 +96,11 @@ Speculative decoding~\cite{leviathan2023fast,chen2023accelerating} accelerates a
 \section{Related Work}
 \label{sec:related}
 
-\textbf{World models.} Recent world models simulate interactive environments as video-prediction tasks conditioned on actions~\cite{mineworld}. Autoregressive generation over VQ-token grids is the dominant paradigm, and the sequential decoding cost is a key obstacle to real-time interaction.
+\textbf{World models.} Recent world models simulate interactive environments as video-prediction tasks conditioned on actions, spanning game environments~\cite{mineworld,genie,gamen}, real-world interaction simulators~\cite{unisim}, and diffusion-based world models for visual control~\cite{diamond,iris}. Autoregressive generation over VQ-token grids is the dominant paradigm, and the sequential decoding cost is a key obstacle to real-time interaction.
 
-\textbf{Speculative decoding.} Speculative decoding~\cite{leviathan2023fast,chen2023accelerating} and its variants use a small draft model to propose tokens that a large target model verifies in parallel, preserving the target distribution while reducing sequential steps. Most prior work targets 1-D language sequences; extending speculation to 2-D image token grids, where diagonal decoding already reorders generation, requires rethinking both the draft granularity and the verification signal.
+\textbf{Speculative decoding.} Speculative decoding~\cite{leviathan2023fast,chen2023accelerating} and its variants use a small draft model to propose tokens that a large target model verifies in parallel, preserving the target distribution while reducing sequential steps. A rich line of follow-ups improves the draft through multiple decoding heads~\cite{medusa}, feature-level prediction~\cite{eagle}, lookahead n-grams~\cite{lookahead}, tree-based verification~\cite{specinfer}, and retrieval~\cite{rest}. Most prior work targets 1-D language sequences; extending speculation to 2-D image token grids, where diagonal decoding already reorders generation, requires rethinking both the draft granularity and the verification signal.
 
-\textbf{Efficient decoding of image token grids.} Beyond speculation, prior work accelerates image generation through parallel decoding of independent tokens (masked or Jacobi-style), caching, and system-level optimizations such as CUDA graphs and kernel fusion. Our study contributes to this line by characterizing, at the frame granularity, where the time actually goes and which engineering interventions move the needle.
+\textbf{Efficient decoding of image token grids.} Beyond speculation, prior work accelerates image generation through masked~\cite{maskgit,muse} and next-scale~\cite{var} parallel decoding of independent tokens, Jacobi-style iterative refinement~\cite{jacobi}, and system-level optimizations such as IO-aware attention kernels~\cite{flashattention,flashattention2} and CUDA graph replay. Our study contributes to this line by characterizing, at the frame granularity, where the time actually goes and which engineering interventions move the needle.
 
 \section{Method}
 \label{sec:method}
@@ -168,7 +168,7 @@ To test whether the intra-frame causal constraint is \emph{necessary} or merely 
 \label{sec:setup}
 
 \subsection{Implementation}
-All experiments use a 300M-parameter Llama-style world model with a VQ-VAE tokenizer, a 13.9M-parameter draft model, and a 2-layer GRU action predictor. Inference is implemented in PyTorch 2.6 with \texttt{torch.compile} (max-autotune) for the target decoder. Experiments run on NVIDIA RTX 3090 (24 GB) GPUs.
+All experiments use a 300M-parameter Llama-style~\cite{llama} world model with a VQ-VAE~\cite{vqvae} tokenizer, a 13.9M-parameter draft model, and a 2-layer GRU action predictor. Inference is implemented in PyTorch 2.6 with \texttt{torch.compile} (max-autotune) for the target decoder. Experiments run on NVIDIA RTX 3090 (24 GB) GPUs.
 
 \subsection{Evaluation Protocol}
 We measure wall-clock FPS over a 15-frame generation episode, excluding the first (compilation warm-up) demo, following the protocol in prior work. Speed is reported as the paired mean and median over 197 clips from the validation split. Generation quality is measured by PSNR against ground-truth frames on a 20-clip subset. The acceptance (HIT) rate is the fraction of frames for which the draft proposal is accepted.
@@ -245,7 +245,7 @@ A central question is \emph{where} the per-step cost comes from. We measure it a
 
 \textbf{Main-decoder side.} The decisive cost is the target decoder's per-step GPU kernel time. Using CUDA events over the compiled decoder, we find each diagonal step takes $\sim$9 ms of GPU time, \emph{nearly independent of the number of tokens decoded in that step}: 8.9 ms for a single token versus 9.0 ms for a 14-token diagonal (Table~\ref{tab:stepcost}). With 33 steps per frame, this fixed cost alone is $\sim$300 ms per frame, matching the observed $\sim$2.7 FPS.
 
-Kernel-level profiling (Table~\ref{tab:kernels}) decomposes the 9 ms further: flash-attention kernels (FMHA) account for 76.6\% of the step time, with the remaining 23.4\% spread across fused GEMM and elementwise kernels. This is the small-batch signature: at batch size 1, attention and MLP kernels are launch-bound rather than compute-bound, so the marginal cost of decoding a few extra tokens is negligible.
+Kernel-level profiling (Table~\ref{tab:kernels}) decomposes the 9 ms further: flash-attention kernels (FMHA)~\cite{flashattention,flashattention2} account for 76.6\% of the step time, with the remaining 23.4\% spread across fused GEMM and elementwise kernels. This is the small-batch signature: at batch size 1, attention and MLP kernels are launch-bound rather than compute-bound, so the marginal cost of decoding a few extra tokens is negligible.
 
 \begin{table}[!ht]
   \centering
@@ -332,7 +332,7 @@ To establish that the $\sim$9 ms/step cost is a genuine boundary rather than an 
   \end{tabular}
 \end{table*}
 
-Each remedy addresses a different hypothetical cause of the cost---draft latency, KV-cache over-read, suboptimal attention kernel, scheduling granularity, GPU contention, or launch overhead---and each leaves the boundary intact. We further rule out three deeper kernel-level remedies. \emph{(i) RoPE fusion}: after \texttt{torch.compile}, the rotary-position kernels are already fused into the surrounding GEMMs (no standalone RoPE kernel survives in the compiled graph), so no further win is available there. \emph{(ii) Native GQA}: PyTorch's \texttt{scaled\_dot\_product\_attention} does not broadcast 4 key-value heads to 16 query heads, forcing the \texttt{repeat\_interleave} expansion; replacing it with a 4-head attention saves only $6.6$~$\mu$s per layer because flash-attention time is dominated by KV length, not head count. \emph{(iii) KV trimming}: a 15-frame episode fills the cache to $\sim$99\% of the 5542 available positions, so trimming has no room to help. Together these indicate that the cost resides in the per-layer compute of the 20-layer model at batch size 1, which is a property of the trained architecture, not of the inference implementation.
+Each remedy addresses a different hypothetical cause of the cost---draft latency, KV-cache over-read, suboptimal attention kernel, scheduling granularity, GPU contention, or launch overhead---and each leaves the boundary intact. We further rule out three deeper kernel-level remedies. \emph{(i) RoPE fusion}: after \texttt{torch.compile}, the rotary-position kernels are already fused into the surrounding GEMMs (no standalone RoPE kernel survives in the compiled graph), so no further win is available there. \emph{(ii) Native GQA}~\cite{gqa}: PyTorch's \texttt{scaled\_dot\_product\_attention} does not broadcast 4 key-value heads to 16 query heads, forcing the \texttt{repeat\_interleave} expansion; replacing it with a 4-head attention saves only $6.6$~$\mu$s per layer because flash-attention time is dominated by KV length, not head count. \emph{(iii) KV trimming}: a 15-frame episode fills the cache to $\sim$99\% of the 5542 available positions, so trimming has no room to help. Together these indicate that the cost resides in the per-layer compute of the 20-layer model at batch size 1, which is a property of the trained architecture, not of the inference implementation.
 
 \subsection{Speed--Quality Trade-off via Tolerance}
 \label{sec:tolerance}
@@ -440,11 +440,11 @@ We presented a diagnostic account of the inference cost of diagonal decoding in 
 We thank Prof.\ Yunbo Wang and Jiajian Li for their guidance and resource support, and the MineWorld authors for releasing their code and checkpoints.
 
 \bibliographystyle{plain}
-\begin{thebibliography}{9}
+\begin{thebibliography}{99}
 \setlength{\itemsep}{0pt}
 
 \bibitem{mineworld}
-MineWorld: A Real-Time and Open-Source Interactive World Model for Minecraft.
+MineWorld: A Real-Time and Open-Source Interactive World Model on Minecraft.
 \newblock \emph{arXiv preprint arXiv:2504.08388}, 2025.
 
 \bibitem{leviathan2023fast}
@@ -461,6 +461,106 @@ C.~Chen, S.~Borgeaud, G.~Irving, et~al.
 L.~Yang, B.~Kang, Z.~Huang, et~al.
 \newblock Depth Anything: Unleashing the power of large-scale unlabeled data.
 \newblock In \emph{CVPR}, 2024.
+
+\bibitem{genie}
+J.~Bruce, M.~Dennis, A.~Edwards, et~al.
+\newblock Genie: Generative interactive environments.
+\newblock In \emph{ICML}, 2024.
+
+\bibitem{gamen}
+D.~Valevski, Y.~Leviathan, M.~Arar, and S.~Fruchter.
+\newblock Diffusion models are real-time game engines.
+\newblock In \emph{ICLR}, 2025.
+
+\bibitem{iris}
+V.~Micheli, E.~Alonso, and F.~Fleuret.
+\newblock Transformers are sample-efficient world models.
+\newblock In \emph{ICLR}, 2023.
+
+\bibitem{unisim}
+S.~Yang, Y.~Du, K.~Ghasemipour, et~al.
+\newblock Learning interactive real-world simulators.
+\newblock In \emph{ICLR}, 2024.
+
+\bibitem{diamond}
+E.~Alonso, A.~Jelley, V.~Micheli, et~al.
+\newblock Diffusion for world modeling: Visual details matter in Atari.
+\newblock In \emph{NeurIPS}, 2024.
+
+\bibitem{vqvae}
+A.~van~den~Oord, O.~Vinyals, and K.~Kavukcuoglu.
+\newblock Neural discrete representation learning.
+\newblock In \emph{NeurIPS}, 2017.
+
+\bibitem{vqgan}
+P.~Esser, R.~Rombach, and B.~Ommer.
+\newblock Taming transformers for high-resolution image synthesis.
+\newblock In \emph{CVPR}, 2021.
+
+\bibitem{medusa}
+T.~Cai, Y.~Li, Z.~Geng, et~al.
+\newblock Medusa: Simple LLM inference acceleration framework with multiple decoding heads.
+\newblock In \emph{ICML}, 2024.
+
+\bibitem{eagle}
+Y.~Li, F.~Wei, C.~Zhang, and H.~Zhang.
+\newblock EAGLE: Speculative sampling requires rethinking feature uncertainty.
+\newblock In \emph{ICML}, 2024.
+
+\bibitem{lookahead}
+Y.~Fu, P.~Bailis, I.~Stoica, and H.~Zhang.
+\newblock Break the sequential dependency of LLM inference using lookahead decoding.
+\newblock In \emph{ICML}, 2024.
+
+\bibitem{specinfer}
+X.~Miao, G.~Oliaro, Z.~Zhang, et~al.
+\newblock SpecInfer: Accelerating generative LLM serving with tree-based speculative inference and verification.
+\newblock In \emph{ASPLOS}, 2024.
+
+\bibitem{rest}
+Z.~He, Z.~Zhong, T.~Cai, J.~D.~Lee, and D.~He.
+\newblock REST: Retrieval-based speculative decoding.
+\newblock In \emph{NAACL}, 2024.
+
+\bibitem{maskgit}
+H.~Chang, H.~Zhang, L.~Jiang, C.~Liu, and W.~T.~Freeman.
+\newblock MaskGIT: Masked generative image transformer.
+\newblock In \emph{CVPR}, 2022.
+
+\bibitem{muse}
+H.~Chang, H.~Zhang, J.~Barber, et~al.
+\newblock Muse: Text-to-image generation via masked generative transformers.
+\newblock In \emph{ICML}, 2023.
+
+\bibitem{var}
+K.~Tian, Y.~Jiang, Z.~Yuan, B.~Peng, and L.~Wang.
+\newblock Visual autoregressive modeling: Scalable image generation via next-scale prediction.
+\newblock In \emph{NeurIPS}, 2024.
+
+\bibitem{jacobi}
+A.~Santilli, S.~Severino, E.~Postolache, et~al.
+\newblock Accelerating transformer inference for translation via parallel decoding.
+\newblock In \emph{ACL}, 2023.
+
+\bibitem{flashattention}
+T.~Dao, D.~Y.~Fu, S.~Ermon, A.~Rudra, and C.~R\'e.
+\newblock FlashAttention: Fast and memory-efficient exact attention with IO-awareness.
+\newblock In \emph{NeurIPS}, 2022.
+
+\bibitem{flashattention2}
+T.~Dao.
+\newblock FlashAttention-2: Faster attention with better parallelism and work partitioning.
+\newblock In \emph{ICLR}, 2024.
+
+\bibitem{llama}
+H.~Touvron, T.~Lavril, G.~Izacard, et~al.
+\newblock LLaMA: Open and efficient foundation language models.
+\newblock \emph{arXiv preprint arXiv:2302.13971}, 2023.
+
+\bibitem{gqa}
+J.~Ainslie, J.~Lee-Thorp, M.~de~Jong, et~al.
+\newblock GQA: Training generalized multi-query transformer models from multi-head checkpoints.
+\newblock In \emph{EMNLP}, 2023.
 
 \end{thebibliography}
 
