@@ -31,12 +31,20 @@ def quality(fr):
     sat = hsv[:, :, 1].mean()
     return np.log1p(lap) + std * 0.3 + sat * 0.05
 
+def psnr(a, b):
+    a = a.astype(np.float32)
+    b = b.astype(np.float32)
+    mse = np.mean((a - b) ** 2)
+    if mse < 1e-10:
+        return 100.0
+    return 10 * np.log10(255.0**2 / mse)
+
 def main():
     base_dir = os.path.join(BASE, 'base_clip12')
     spec_dir = os.path.join(BASE, 'spec_clip4')
     common = sorted(set(os.listdir(base_dir)) & set(os.listdir(spec_dir)))
 
-    # 对每个共有 clip，找 baseline 中质量最高的帧，取对应 spec 帧和 GT 帧
+    # 对每个共有 clip，按 spec vs GT 的 PSNR 选帧（证明 speculative 质量）
     candidates = []
     for f in common:
         clip = f.replace('.mp4', '').replace('clip_', '')
@@ -46,25 +54,22 @@ def main():
         if not os.path.exists(gt_path):
             continue
         gf = read_frames(gt_path)
-        n = min(len(bf), len(sf))
+        n = min(len(bf), len(sf), len(gf) - 1)
         if n < 3:
             continue
-        # 在 baseline 帧里选质量最高的（排除边界帧 0）
-        best_i, best_q = 0, -1
-        for i in range(1, n):
-            q = quality(bf[i])
-            if q > best_q:
-                best_q, best_i = q, i
-        # GT 对应帧：生成帧 i 对应 GT 帧 i+1
-        gt_idx = best_i + 1
-        if gt_idx >= len(gf):
-            continue
-        candidates.append((clip, bf[best_i], sf[best_i], gf[gt_idx], best_q))
+        # 逐帧算 spec vs GT 的 PSNR
+        frame_psnrs = [psnr(sf[i], gf[i + 1]) for i in range(n)]
+        mean_psnr = float(np.mean(frame_psnrs))
+        best_i = int(np.argmax(frame_psnrs))
+        candidates.append((clip, bf[best_i], sf[best_i], gf[best_i + 1], mean_psnr))
 
+    # 按平均 PSNR 排序（证明 spec 整体质量，而非单帧侥幸）
     candidates.sort(key=lambda x: -x[4])
     # 选前 6 个
     top = candidates[:6]
-    print(f'从 {len(common)} 个共有 clip 中选出 {len(top)} 个高质量样本')
+    print(f'从 {len(common)} 个共有 clip 中选出 {len(top)} 个 spec 质量最高的样本')
+    for clip, _, _, _, p in top:
+        print(f'  clip_{clip}: spec-GT 平均 PSNR = {p:.2f} dB')
 
     # 拼图：每行 [GT | baseline | spec]，共 3 行（每行 2 个样本 -> 6 个样本 = 3 行 x 2 组）
     # 实际做 3 行，每行一个样本（GT | baseline | spec 三列）
