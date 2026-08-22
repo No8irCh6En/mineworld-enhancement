@@ -11,8 +11,9 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
 
-# Add tools/ and util/ directory to sys.path
-current_dir = os.path.dirname(os.path.abspath(__file__))
+# Add project root (parent of training/) and util/ to sys.path
+current_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(current_dir)
 sys.path.append(os.path.join(current_dir, 'util'))
 
 try:

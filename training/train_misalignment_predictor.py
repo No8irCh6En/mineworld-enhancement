@@ -20,7 +20,7 @@ import matplotlib.pyplot as plt
 try:
     from vae import VAE
 except ImportError:
-    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+    sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from vae import VAE
 
 # Import DepthAnything
@@ -28,7 +28,7 @@ try:
     from util.DepthAnythingWrapper import DepthAnythingWrapper, DEPTH_ANYTHING_TRANSFORM
 except ImportError:
     print("Warning: Could not import DepthAnythingWrapper. Make sure util/DepthAnythingWrapper.py exists.")
-    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+    sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     DepthAnythingWrapper = None 
     DEPTH_ANYTHING_TRANSFORM = None
 
@@ -36,7 +36,7 @@ except ImportError:
 try:
     from mcdataset import MCDataset
 except ImportError:
-    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+    sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from mcdataset import MCDataset
 
 # --- New: Load Neighbor Mask ---
@@ -406,7 +406,7 @@ def train(args):
 
 
     if args.use_neighbor_mask:
-        workspace_root = os.path.dirname(os.path.abspath(__file__))
+        workspace_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         # Use the shift-based neighbors
         neighbor_json = os.path.join(workspace_root, "analysis_results", "shift_token_neighbors.json")
         if os.path.exists(neighbor_json):

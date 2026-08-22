@@ -1,28 +1,34 @@
 # MineWorld-Enhancement
 
-> 🚀 **面向 MineWorld 的推理加速与增强**：推测解码（Speculative Decoding）+ 深度感知草稿模型（Depth-Aware Draft Model）+ 系统化评估
->
-> 基于 [MineWorld](https://github.com/microsoft/mineworld)（一个 Minecraft 实时交互世界模型），本仓库聚焦于**推理速度**与**生成质量**的进一步突破。
+> **面向实时交互世界模型的推理代价诊断**：对角线解码（Diagonal Decoding）的精确测速、投机解码（Speculative Decoding）的系统研究，以及一个明确的边界刻画——推理技巧无法跨越的边界在哪里，跨越它需要回到训练层。
 
 [![arXiv](https://img.shields.io/badge/arXiv-2504.08388-red?logo=arxiv&logoColor=white)](https://arxiv.org/pdf/2504.08388) &ensp; [![Base Repo](https://img.shields.io/badge/Base-MineWorld-blue?logo=github&logoColor=white)](https://github.com/microsoft/mineworld) &ensp; [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 
 ---
 
-## ✨ 核心贡献
+## 📄 论文
 
-在原版 MineWorld 之上，本仓库实现了三项关键增强：
+本仓库的完整研究已整理为论文（`paper/main.tex`，可直接编译为 PDF）：
 
-| # | 增强方向 | 核心文件 | 说明 |
-|---|---------|---------|------|
-| 1 | **推测解码** | `inference_speculative.py`、`speculative_wrapper.py`、`diagonal_decoding.py` | 在对角解码之上叠加投机采样，Main/Spec 双流并行 |
-| 2 | **深度感知草稿模型** | `util/attn_model.py`、`train_uncertainty.py` | 引入深度图先验的 `AttentionTokenPredictor`，一次性预测整帧 336 token |
-| 3 | **置信度软合并（容错）** | `speculative_wrapper.py`、`train_uncertainty.py` | 逐 token 置信度门控，低置信度区域回退到上一帧，允许"部分 MISS" |
+> **The Inference Cost of Diagonal Decoding in Autoregressive World Models: Measuring the Boundary and Why Inference-Time Tricks Cannot Cross It**
+
+核心结论（均有实测数据支撑）：
+
+1. **代价的精确构成**：对角线解码每步 $\sim$9 ms GPU kernel 时间，其中 flash-attention 占 77%，且严格线性于层数（0.45 ms/层），与每步解码的 token 数无关。
+2. **推理技巧无法突破**：投机解码（达到 $1.012\times$ parity）、KV 裁剪、xformers、window 调参、块级并行、多卡放置，全部无效。
+3. **帧内因果是 learned necessity**：一次性帧级并行解码达 $43.5$ FPS（$15.7\times$）但 token 准确率归零（teacher-forcing 下亦然）。
 
 ---
 
-## 🏗️ 背景：MineWorld 是什么
+## 🎯 项目简介
 
-MineWorld 是一个 **视觉-动作自回归世界模型**：输入若干游戏画面帧与玩家动作（键盘 + 鼠标），模型预测游戏世界的演化，逐帧生成未来画面。
+MineWorld 是一个 **视觉-动作自回归世界模型**：输入若干游戏画面帧与玩家动作（键盘 + 鼠标），模型预测游戏世界的演化，逐帧生成未来画面。一帧画面被 VQ-VAE 编码为 $14\times24=336$ 个离散 token。
+
+原版通过 **Diagonal Decoding（对角线解码）** 利用 2-D 空间依赖，把每帧的 336 步串行前向压缩到 33 步（14+24-1=37 条对角线，窗口调度合并到 33）。本仓库在此基础上：
+
+1. **实现帧级投机解码**（`inference_speculative.py`）——小模型一次前向提议整帧，动作验证决定接受/回退；
+2. **系统测量推理代价**——CUDA event + kernel 级 profiling，定位 $\sim$9 ms/步的构成；
+3. **刻画加速边界**——穷举推理侧优化后，指出真正的前进方向是训练时的因果结构（2-D block causal）。
 
 ```mermaid
 flowchart LR
@@ -36,134 +42,55 @@ flowchart LR
     style V fill:#f0ad4e,color:#fff
 ```
 
-原版的推理瓶颈在于**自回归逐 token 生成**：一帧 14×24 = 336 个像素 token，需要 336 次串行前向。原版通过 **Diagonal Decoding（对角解码）** 将步数降到约 60 步，达到 4–7 FPS。
-
-> **对角线解码**：不按行、而按对角线顺序生成 token，一次前向可并行预测对角线上的多个 token。
-
-```mermaid
-flowchart TB
-    subgraph "Row-major (Naive) — 336 steps"
-        A1["(0,0)"] --> A2["(0,1)"] --> A3["(0,2)"] --> A4["..."] --> A336["(13,23)"]
-    end
-    subgraph "Diagonal Decoding — ~60 steps"
-        B1["(0,0)"] --> B2["(0,1) (1,0)"] --> B3["(0,2) (1,1) (2,0)"] --> B4["..."] --> B60["final diag"]
-    end
-    style A1 fill:#e74c3c,color:#fff
-    style B1 fill:#2ecc71,color:#fff
-    style B2 fill:#2ecc71,color:#fff
-    style B3 fill:#2ecc71,color:#fff
-```
-
 ---
 
-## 🚀 增强一：推测解码（Speculative Decoding）
+## 🚀 核心组件
 
-### 核心思想
-
-在对角解码基础上，引入**双流并行**：Main 流生成当前帧，K 个 Spec 流同时猜测下一帧。在帧边界通过**动作验证**决定接受（HIT）或回退（MISS）。
-
-```mermaid
-flowchart TB
-    P["Prompt Prefill<br/>(frames + action)"] --> MAIN["Main Stream<br/>Generate Frame T"]
-    P --> SPEC["Spec Streams ×K<br/>Generate Frame T+1"]
-    MAIN --> FBD{Frame Boundary}
-    SPEC --> FBD
-    FBD --> VERIFY["Action Verification"]
-    VERIFY -->|"HIT ✓"| JUMP["Copy Spec KV → Main<br/>Skip T+1 generation"]
-    VERIFY -->|"MISS ✗"| GT["Inject GT Action<br/>Draft Prefill Spec"]
-    JUMP --> MAIN
-    GT --> MAIN
-
-    style MAIN fill:#2ecc71,color:#fff
-    style SPEC fill:#9b59b6,color:#fff
-    style JUMP fill:#f1c40f,color:#000
-    style GT fill:#e74c3c,color:#fff
-```
-
-> **关于"部分 MISS"**：草稿模型的输出并非「全对才接受」。每一帧的草稿 token 都附带置信度，低置信度的 token 在图像空间与上一帧做**软合并**（soft merge）——即"部分预测对了就部分接受，拿不准的地方回退上一帧"。这大幅提升了草稿的可用率，避免整帧被丢弃。
-
-### 关键组件
-
-| 组件 | 实现 | 说明 |
+| 组件 | 文件 | 说明 |
 |------|------|------|
-| **动作预测器** | `train_action_predictor.py` | 2 层 GRU，输入历史动作序列，beam search 输出 top-K 候选动作 |
-| **草稿模型** | `util/attn_model.py`（`AttentionTokenPredictor`） | ResNet 视觉编码器 + 动作 MLP + 交叉注意力，**一次前向预测整帧 336 token** |
-| **双流调度** | `diagonal_decoding.py` | `speculative_img_diagd_decode_n_tokens` 状态机 |
+| 标准推理（对角线解码） | `inference.py` | 原版对角线解码入口 |
+| **投机解码推理** | `inference_speculative.py` | 帧级投机，Main/Spec 双流 + 动作验证 |
+| 草稿模型 + 动作预测器 | `speculative_wrapper.py` | `AttentionTokenPredictor`（13.9M）+ 2 层 GRU |
+| 对角线 + 投机调度 | `diagonal_decoding.py` | 状态机、窗口调度、容错验证 |
+| 世界模型 | `lvm.py` | LLaMA 架构 + 旋转位置编码 + GQA 注意力 |
+| 深度感知草稿模型定义 | `util/attn_model.py` | ResNet + 动作 MLP + 交叉注意力 |
+| 动作预测器训练 | `train_action_predictor.py` | 2 层 GRU，top-K 候选 |
+| 草稿模型训练 | `training/train_uncertainty.py` | 深度 + 置信度（uncertainty loss） |
 
-### 草稿模型架构
+### 关键设计：容错动作验证
 
-```mermaid
-flowchart TB
-    subgraph "AttentionTokenPredictor"
-        IMG["Prev Image +<br/>Depth Map<br/>[K,4,224,384]"] --> RES["ResNet Encoder<br/>[K,512,14,24]"]
-        ACT["Action Candidates<br/>[K,11]"] --> MLP["Action MLP<br/>[K,512]"]
-        RES --> F["Fusion<br/>action-aware"]
-        MLP --> F
-        F --> CA["Cross Attention<br/>Q=f_pred, K/V=f_curr"]
-        CA --> HEAD1["head_token<br/>[K,8192,14,24]"]
-        CA --> HEAD2["head_cls<br/>[K,1,14,24]"]
-        HEAD1 --> TOK["336 draft tokens"]
-        HEAD2 --> CONF["confidence map"]
-    end
-    style RES fill:#e67e22,color:#fff
-    style CA fill:#3498db,color:#fff
-```
+投机解码的接受机制不是"全对才接受"。键盘动作必须精确匹配，但相机 yaw/pitch 允许在 $\tau$ 个量化 bin 内偏差（默认 $\tau=2$，环境变量 `CAM_TOL` 可调）——小相机偏差产生近乎相同的帧，容错验证大幅提升接受率。
 
 ---
 
-## 📊 增强二：深度感知与几何分析
+## 📊 关键实验结果
 
-草稿模型的视觉输入拼接了 **DepthAnything** 深度图，为预测提供几何先验。配套实现了一系列 token 空间几何分析工具：
+### 端到端（197 个配对 clip，RTX 3090）
 
-| 工具 | 作用 |
-|------|------|
-| `token_sampler.py` | token 网格上的空间角度采样（`SpatialAngleSampler`），将 yaw/pitch 映射到 token 邻居 |
-| `tools/analyze_token_angles.py` | 分析 token 间的相机角度关系 |
-| `tools/analyze_shift_neighbors.py` | 分析平移（shift）邻居 |
-| `tools/analyze_depth_misalignment.py` | 深度图与视觉 token 的错位分析 |
-| `train_misalignment_predictor.py` | 训练错位预测器 |
+| 方法 | 平均 FPS | 中位 FPS | PSNR (20 clips) |
+|------|---------|---------|-----------------|
+| 对角线解码（baseline） | 2.675 ± 0.096 | 2.753 | 17.19 |
+| 帧级投机（本仓库） | 2.702 ± 0.149 | 2.730 | 15.65 |
+| **加速比** | **1.012×** | **1.024×** | −1.54 dB |
 
----
+### 推理代价拆解（每步 decode）
 
-## 🎯 增强三：置信度软合并（容错接受）
+| 组件 | GPU 时间 | 占比 |
+|------|---------|------|
+| Flash attention (FMHA) | 6.9 ms | 77% |
+| 融合 GEMM（MLP + 投影） | 1.4 ms | 16% |
+| 其他（elementwise/reduction） | 0.7 ms | 7% |
 
-推测解码的传统做法是「草稿全对才接受，否则整段丢弃」。这在实际中过于苛刻——草稿模型很难一次性精确预测整帧 336 个 token。
+### 被排除的推理侧优化（论文 Table 3）
 
-本仓库采用 **逐 token 置信度门控的软合并**：
-
-```mermaid
-flowchart LR
-    DRAFT["Draft Frame<br/>draft_img"] --> CONF["Confidence Map<br/>conf ∈ [0,1]"]
-    PREV["Previous Frame<br/>prev_img"] --> MERGE["Soft Merge"]
-    CONF --> MERGE
-    MERGE -->|"merged = conf·draft + (1-conf)·prev"| ENC["Re-encode<br/>final tokens"]
-
-    style CONF fill:#f1c40f,color:#000
-    style MERGE fill:#2ecc71,color:#fff
-```
-
-- **高置信度 token**：采纳草稿的预测
-- **低置信度 token**：回退到上一帧的对应像素
-- **效果**：草稿「部分正确就部分接受」，拿不准的地方自动回退，避免整帧草稿被浪费
-
-| 实现点 | 位置 |
-|--------|------|
-| 置信度头 `head_cls` | `util/attn_model.py` |
-| 置信度训练（uncertainty loss） | `train_uncertainty.py` |
-| 图像空间软合并 | `speculative_wrapper.py` → `draft_func(merge=True)` |
-
----
-
-## 📈 评估结果
-
-采用 FVD / LPIPS / SSIM / PSNR 四项指标，对比 Teacher Forcing 与自回归生成：
-
-| 模式 | FVD ↓ | LPIPS ↓ | SSIM ↑ | PSNR ↑ |
-|------|-------|---------|--------|--------|
-| Teacher Forcing | 402.4 | 0.140 | 0.616 | 23.78 |
-| Autoregressive | 1571.0 | 0.621 | 0.465 | 14.64 |
-
-> 完整评估代码见 `eval_pred_video_modes.py`，深度敏感性分析见 `eval_depth_sensitivity.py`，邻居鲁棒性见 `verify_neighbor_robustness.py`。
+| 优化方向 | 结果 | 原因 |
+|---------|------|------|
+| 投机解码 | 1.012× parity | 瓶颈在 per-step 成本，非 draft |
+| KV cache 裁剪 | 无收益 | 15 帧推理时 cache 填充到 99% |
+| xformers | 慢 4.5× | SDPA flash attention 已最优 |
+| window 调参 (2/4/8) | 无变化 | 步数固定 33 |
+| 块级并行 | 不减少步数 | 块内串行冗余 |
+| 多卡放置 | 无变化 | 无 contention 可缓解 |
 
 ---
 
@@ -187,7 +114,7 @@ python inference.py \
     --output_dir "outputs_video/"
 ```
 
-### 推测解码推理
+### 投机解码推理
 ```bash
 python inference_speculative.py \
     --data_root "small_validation" \
@@ -197,8 +124,10 @@ python inference_speculative.py \
     --output_dir "outputs_video/" \
     --action_model_ckpt "pred_model/action_predictor_latest.pth" \
     --draft_model_ckpt "pred_model_uncertainty/best_model.pth" \
-    [--use_oracle]   # 可选：用 GT oracle 验证 workflow 正确性
+    [--use_oracle]   # 可选：GT oracle 验证 workflow 正确性
 ```
+
+> 注意：首次运行会触发 `torch.compile` 编译（约 1 分钟）；第 2 个 demo 才是预热后的真实速度。
 
 ### 训练
 ```bash
@@ -206,7 +135,7 @@ python inference_speculative.py \
 python train_action_predictor.py --data_root ... --output_dir ...
 
 # 深度感知草稿模型
-python train_uncertainty.py --data_root ... --output_dir ...
+python training/train_uncertainty.py --data_root ... --output_dir ...
 ```
 
 ---
@@ -215,27 +144,39 @@ python train_uncertainty.py --data_root ... --output_dir ...
 
 ```
 mineworld-enhancement/
-├── inference.py                # 标准推理（对角线解码）
-├── inference_speculative.py    # 🆕 推测解码推理入口
-├── speculative_wrapper.py      # 🆕 草稿模型 + 动作预测器包装
-├── diagonal_decoding.py        # ✏️ 对角线解码 + 投机解码调度
-├── lvm.py                      # ✏️ LLaMA 世界模型（新增投机生成接口）
-├── token_sampler.py            # 🆕 token 空间几何采样
-├── train_action_predictor.py   # 🆕 动作预测器训练
-├── train_uncertainty.py        # 🆕 草稿模型训练（深度 + 置信度）
-├── train_pred_with_attn.py     # 🆕 注意力草稿模型训练（早期版本）
-├── train_misalignment_predictor.py  # 🆕 错位预测器训练
-├── eval_pred_video_modes.py    # 🆕 视频质量评估（FVD/LPIPS/SSIM/PSNR）
-├── eval_depth_sensitivity.py   # 🆕 深度敏感性分析
-├── verify_neighbor_robustness.py    # 🆕 邻居鲁棒性验证
-├── util/
-│   ├── attn_model.py           # 🆕 AttentionTokenPredictor（草稿模型）
-│   ├── DepthAnythingWrapper.py # 🆕 深度估计封装
-│   ├── neighbor_loss.py        # 🆕 邻居一致性损失
+├── inference.py                  # 标准推理（对角线解码）
+├── inference_speculative.py      # 投机解码推理入口
+├── speculative_wrapper.py        # 草稿模型 + 动作预测器包装
+├── diagonal_decoding.py          # 对角线 + 投机解码调度
+├── lvm.py                        # LLaMA 世界模型
+├── token_sampler.py              # token 空间几何采样
+├── mcdataset.py                  # Minecraft 数据集辅助
+├── vae.py                        # VQ-VAE tokenizer 封装
+├── train.py                      # 主模型训练（含训练数据构造）
+├── train_action_predictor.py     # 动作预测器训练
+│
+├── training/                     # 草稿模型等训练脚本
+│   ├── train_uncertainty.py      #   深度 + 置信度草稿模型
+│   ├── train_misalignment_predictor.py
+│   ├── train_pred_with_attn.py
 │   └── ...
-├── tools/                      # 🆕 token 空间分析工具集
-├── configs/                    # 模型配置
-└── checkpoints/                # 预训练权重（不入库）
+│
+├── evaluation/                   # 质量评估脚本
+│   ├── eval_pred_video_modes.py  #   FVD/LPIPS/SSIM/PSNR
+│   ├── eval_depth_sensitivity.py
+│   └── verify_neighbor_robustness.py
+│
+├── scripts/                      # 推理/实验/绘图脚本
+│   ├── infer_spec.sh             #   投机推理脚本
+│   ├── run_exp.sh                #   测速实验脚本
+│   └── ...
+│
+├── util/                         # 模型与工具（深度模型、草稿模型、helper）
+├── tools/                        # token 空间分析工具集
+├── configs/                      # 模型配置
+├── checkpoints/                  # 预训练权重（不入库）
+├── paper/                        # 📄 论文（LaTeX 源码 + PDF）
+└── docs/                         # 优化记录与技术文档
 ```
 
 ---
@@ -247,5 +188,5 @@ mineworld-enhancement/
 ## 🙏 致谢
 
 - [MineWorld](https://github.com/microsoft/mineworld)：基础世界模型与对角线解码
-- [VPT](https://github.com/openai/Video-Pre-Training)、[generative-models](https://github.com/Stability-AI/generative-models)：基础代码借鉴
 - [DepthAnything](https://github.com/DepthAnything/Depth-Anything-V2)：深度估计模型
+- 感谢 Yunbo Wang 老师与 Jiajian Li 学长提供的资源与思路支持

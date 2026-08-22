@@ -16,8 +16,8 @@ import argparse
 
 
 # 添加路径以导入现有模块
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-METRICS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "common_metrics_on_video_quality")
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+METRICS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "common_metrics_on_video_quality")
 sys.path.append(METRICS_DIR)
 
 from util.helper import instantiate_from_config

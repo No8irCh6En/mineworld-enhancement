@@ -322,7 +322,7 @@ To establish that the $\sim$9 ms/step cost is a genuine boundary rather than an 
     Remedy & Result & Reason \\
     \midrule
     Speculative decoding (frame-level) & $1.012\times$ parity & per-step cost, not draft, dominates \\
-    KV-cache trimming (5542$\to$400) & $\pm$1\% & flash attention insensitive to KV length at $q{=}3$ \\
+    KV-cache trimming (5542$\to$400) & $\pm$1\% & cache fills to 99\% during a 15-frame episode \\
     xformers attention & $4.5\times$ slower & SDPA flash attention already optimal \\
     Window-size tuning (2/4/8) & no change & step count fixed at 33 \\
     Block-level parallelization & no reduction & intra-block serial redundancy \\
@@ -332,7 +332,7 @@ To establish that the $\sim$9 ms/step cost is a genuine boundary rather than an 
   \end{tabular}
 \end{table*}
 
-Each remedy addresses a different hypothetical cause of the cost---draft latency, KV-cache over-read, suboptimal attention kernel, scheduling granularity, GPU contention, or launch overhead---and each leaves the boundary intact. Together they indicate that the cost resides in the per-layer compute of the 20-layer model at batch size 1, which is a property of the trained architecture, not of the inference implementation.
+Each remedy addresses a different hypothetical cause of the cost---draft latency, KV-cache over-read, suboptimal attention kernel, scheduling granularity, GPU contention, or launch overhead---and each leaves the boundary intact. We further rule out three deeper kernel-level remedies. \emph{(i) RoPE fusion}: after \texttt{torch.compile}, the rotary-position kernels are already fused into the surrounding GEMMs (no standalone RoPE kernel survives in the compiled graph), so no further win is available there. \emph{(ii) Native GQA}: PyTorch's \texttt{scaled\_dot\_product\_attention} does not broadcast 4 key-value heads to 16 query heads, forcing the \texttt{repeat\_interleave} expansion; replacing it with a 4-head attention saves only $6.6$~$\mu$s per layer because flash-attention time is dominated by KV length, not head count. \emph{(iii) KV trimming}: a 15-frame episode fills the cache to $\sim$99\% of the 5542 available positions, so trimming has no room to help. Together these indicate that the cost resides in the per-layer compute of the 20-layer model at batch size 1, which is a property of the trained architecture, not of the inference implementation.
 
 \subsection{Speed--Quality Trade-off via Tolerance}
 \label{sec:tolerance}

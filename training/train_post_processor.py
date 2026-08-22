@@ -17,7 +17,7 @@ import cv2
 import math 
 
 # --- 1. 导入必要的组件 ---
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # 尝试导入 LPIPS
 try:

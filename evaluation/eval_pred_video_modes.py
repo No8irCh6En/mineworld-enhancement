@@ -14,8 +14,8 @@ from tqdm import tqdm
 from collections import defaultdict
 
 # --- 1. 路径设置与依赖导入 ---
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-METRICS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "common_metrics_on_video_quality")
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+METRICS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "common_metrics_on_video_quality")
 sys.path.append(METRICS_DIR)
 
 # 导入 common_metrics 中的计算函数

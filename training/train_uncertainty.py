@@ -24,7 +24,7 @@ from torchvision import transforms
 import datetime # [新增] 用于生成时间戳
 
 # --- Imports ---
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 try:
     from util.dataset_reader import MultiModalDataset, VideoEvalDataset, SequentialMultiModalDataset, evaluate_video_metrics
@@ -342,7 +342,7 @@ def train(args):
     
     # --- Loss Functions ---
     # 使用 NeighborConsistencyLoss 替代纯 CE
-    neighbor_json = os.path.join(os.path.dirname(os.path.abspath(__file__)), "util", "all_token_neighbors_cosine.json")
+    neighbor_json = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "util", "all_token_neighbors_cosine.json")
     
     # 定义一个标准的 CE Loss，带有 Label Smoothing，用于 Warmup 和基础指导
     criterion_ce_smooth = nn.CrossEntropyLoss(reduction='none', label_smoothing=0.1)
