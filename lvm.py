@@ -24,7 +24,7 @@ from util.helper import get_obj_from_str, instantiate_from_config
 from train import IMAGE_TOKEN_LENGTH, ACTION_TOKEN_LENGTH
 from diagonal_decoding import decode_one_token, decode_some_token, decode_n_tokens, decode_n_tokens_for_gradio, prefill, img_diagd_decode_n_tokens, sample_n_top_k, sample_n_top_p, video_diagd_decode_n_tokens, img_diagd_decode_n_token_for_gradio, speculative_decoding_step, speculative_img_diagd_decode_n_tokens
 from torch.nn.attention import SDPBackend
-from speculative_wrapper import get_inference_functions
+from util.speculative_wrapper import get_inference_functions
 
 torch.backends.cuda.matmul.allow_tf32 = False
 

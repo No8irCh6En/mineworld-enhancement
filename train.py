@@ -31,7 +31,7 @@ from datetime import datetime
 from einops import rearrange
 
 from util.helper import load_model
-from inference import get_args
+from inference.inference import get_args
 from mcdataset import MCDataset
 # from vis_tools import save_bev_batch_grid
 

@@ -1,4 +1,4 @@
-CUDA_VISIBLE_DEVICES=4 python infer_with_guess.py \
+CUDA_VISIBLE_DEVICES=4 python inference/infer_with_guess.py \
         --data_root "/data/cliang/mineworld/validation/small_validation" \
         --model_ckpt "/home/cliang/mineworld/outputs/noise_with_bias" \
         --config "configs/modify.yaml" \

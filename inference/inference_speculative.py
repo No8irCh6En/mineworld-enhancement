@@ -1,4 +1,6 @@
 import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import cv2
 import torch
 import time
@@ -19,7 +21,7 @@ from deepspeed.utils.zero_to_fp32 import get_fp32_state_dict_from_zero_checkpoin
 import json
 
 # Import new logic
-from speculative_wrapper import get_inference_functions
+from util.speculative_wrapper import get_inference_functions
 from diagonal_decoding import speculative_img_diagd_decode_n_tokens
 
 torch.backends.cuda.matmul.allow_tf32 = False

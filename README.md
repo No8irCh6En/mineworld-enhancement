@@ -26,7 +26,7 @@ MineWorld 是一个 **视觉-动作自回归世界模型**：输入若干游戏�
 
 原版通过 **Diagonal Decoding（对角线解码）** 利用 2-D 空间依赖，把每帧的 336 步串行前向压缩到 33 步（14+24-1=37 条对角线，窗口调度合并到 33）。本仓库在此基础上：
 
-1. **实现帧级投机解码**（`inference_speculative.py`）——小模型一次前向提议整帧，动作验证决定接受/回退；
+1. **实现帧级投机解码**（`inference/inference_speculative.py`）——小模型一次前向提议整帧，动作验证决定接受/回退；
 2. **系统测量推理代价**——CUDA event + kernel 级 profiling，定位 $\sim$9 ms/步的构成；
 3. **刻画加速边界**——穷举推理侧优化后，指出真正的前进方向是训练时的因果结构（2-D block causal）。
 
@@ -48,9 +48,9 @@ flowchart LR
 
 | 组件 | 文件 | 说明 |
 |------|------|------|
-| 标准推理（对角线解码） | `inference.py` | 原版对角线解码入口 |
-| **投机解码推理** | `inference_speculative.py` | 帧级投机，Main/Spec 双流 + 动作验证 |
-| 草稿模型 + 动作预测器 | `speculative_wrapper.py` | `AttentionTokenPredictor`（13.9M）+ 2 层 GRU |
+| 标准推理（对角线解码） | `inference/inference.py` | 原版对角线解码入口 |
+| **投机解码推理** | `inference/inference_speculative.py` | 帧级投机，Main/Spec 双流 + 动作验证 |
+| 草稿模型 + 动作预测器 | `util/speculative_wrapper.py` | `AttentionTokenPredictor`（13.9M）+ 2 层 GRU |
 | 对角线 + 投机调度 | `diagonal_decoding.py` | 状态机、窗口调度、容错验证 |
 | 世界模型 | `lvm.py` | LLaMA 架构 + 旋转位置编码 + GQA 注意力 |
 | 深度感知草稿模型定义 | `util/attn_model.py` | ResNet + 动作 MLP + 交叉注意力 |
@@ -105,7 +105,7 @@ pip install -r requirements.txt
 
 ### 标准推理（对角线解码）
 ```bash
-python inference.py \
+python inference/inference.py \
     --data_root "small_validation" \
     --model_ckpt "checkpoints/300M_16f.ckpt" \
     --config "configs/modify.yaml" \
@@ -116,7 +116,7 @@ python inference.py \
 
 ### 投机解码推理
 ```bash
-python inference_speculative.py \
+python inference/inference_speculative.py \
     --data_root "small_validation" \
     --model_ckpt "checkpoints/300M_16f.ckpt" \
     --config "configs/modify.yaml" \
@@ -144,9 +144,13 @@ python training/train_uncertainty.py --data_root ... --output_dir ...
 
 ```
 mineworld-enhancement/
-├── inference.py                  # 标准推理（对角线解码）
-├── inference_speculative.py      # 投机解码推理入口
-├── speculative_wrapper.py        # 草稿模型 + 动作预测器包装
+├── inference/                    # 推理入口
+│   ├── inference.py              #   标准推理（对角线解码）
+│   ├── inference_speculative.py  #   投机解码推理
+│   ├── infer_with_guess.py       #   猜测采样推理
+│   ├── infer.sh                  #   推理脚本
+│   └── ...
+│
 ├── diagonal_decoding.py          # 对角线 + 投机解码调度
 ├── lvm.py                        # LLaMA 世界模型
 ├── token_sampler.py              # token 空间几何采样
@@ -166,12 +170,15 @@ mineworld-enhancement/
 │   ├── eval_depth_sensitivity.py
 │   └── verify_neighbor_robustness.py
 │
-├── scripts/                      # 推理/实验/绘图脚本
-│   ├── infer_spec.sh             #   投机推理脚本
+├── scripts/                      # 实验/绘图/统计脚本
 │   ├── run_exp.sh                #   测速实验脚本
 │   └── ...
 │
-├── util/                         # 模型与工具（深度模型、草稿模型、helper）
+├── util/                         # 模型与工具
+│   ├── speculative_wrapper.py    #   草稿模型 + 动作预测器包装
+│   ├── attn_model.py             #   AttentionTokenPredictor
+│   ├── DepthAnythingWrapper.py   #   深度估计封装
+│   └── ...
 ├── tools/                        # token 空间分析工具集
 ├── configs/                      # 模型配置
 ├── checkpoints/                  # 预训练权重（不入库）
