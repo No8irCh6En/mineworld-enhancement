@@ -27,7 +27,7 @@
   linkcolor=linkcolor,
   citecolor=linkcolor,
   urlcolor=linkcolor,
-  pdfauthor={Anonymous},
+  pdfauthor={Chen Liang},
   pdftitle={The Inference Cost of Diagonal Decoding in Autoregressive World Models}
 }
 
@@ -38,17 +38,23 @@
 \title{\bf The Inference Cost of Diagonal Decoding in Autoregressive World Models: Measuring the Boundary and Why Inference-Time Tricks Cannot Cross It}
 
 \author{
-  Anonymous Author(s)\\
-  \texttt{anonymous@example.com}
+  Chen Liang\\
+  Shanghai Jiao Tong University\\
+  \texttt{no8irch6en@sjtu.edu.cn}
 }
 \date{}
 
 \begin{document}
+
+\twocolumn[
 \maketitle
 
 \begin{abstract}
 Real-time interactive world models autoregressively generate video frames from visual observations and player actions, where per-frame latency bounds interactive fidelity. The de facto decoding scheme for these models is \emph{diagonal decoding}, which reduces the 336 sequential forward passes of a $14\times24$ VQ-token grid to roughly 33 parallel passes per frame. Yet on a single RTX 3090 this still yields only $\sim$2.7 FPS, leaving the central question unanswered: \emph{where does the remaining cost come from, and can it be removed?} In this paper we provide a diagnostic account of the inference cost of diagonal decoding. We measure, with CUDA-event and kernel-level profiling, that each diagonal step carries a fixed $\sim$9 ms GPU kernel cost---dominated (77\%) by flash-attention kernels and strictly linear in the number of transformer layers (0.45 ms/layer)---rather than by draft latency, CPU--GPU synchronization, or KV-cache length. We then systematically rule out inference-time remedies: speculative decoding reaches only speed \emph{parity} with the baseline ($1.012\times$ mean speedup over 197 paired clips at a $1.5$ dB PSNR cost); kernel swapping (xformers), KV-cache trimming, window-size tuning, and multi-GPU placement all fail to cross this boundary. Crucially, we show that the intra-frame causal structure is \emph{necessary rather than incidental}: an aggressive one-shot frame-parallel decoding, in which all 336 tokens are generated in one pass, achieves $43.5$ FPS (a $15.7\times$ speedup) but collapses to $0\%$ token accuracy even under teacher forcing. Our findings characterize a hard boundary of current inference stacks: the diagonal-decoding cost is an emergent property of the model's trained causal structure, and crossing it requires changing the training-time causal structure---not the inference algorithm.
 \end{abstract}
+
+\vspace{2mm}
+]
 
 \section{Introduction}
 \label{sec:intro}
@@ -410,7 +416,7 @@ These two results together point to a clear direction for future work: \emph{cha
 We presented a diagnostic account of the inference cost of diagonal decoding in autoregressive world models. We measured the cost precisely ($\sim$9 ms/step, flash-attention-dominated, linear in layers), ruled out every inference-time remedy we tested (including frame-level speculative decoding, which reaches only $1.012\times$ parity at a $1.5$ dB quality cost), and demonstrated that the intra-frame causal structure is a learned necessity by showing that one-shot frame-parallel decoding collapses to $0\%$ token accuracy under teacher forcing. The boundary we characterize is not a shortcoming of diagonal decoding, nor a gap that inference can close; it is an emergent property of the model's trained causal structure. Crossing it requires changing the training-time causal structure, for which we outline a 2-D block-causal direction grounded in our measurements.
 
 \section*{Acknowledgments}
-We thank the MineWorld authors for releasing their code and checkpoints.
+We thank Prof.\ Yunbo Wang and Jiajian Li for their guidance and resource support, and the MineWorld authors for releasing their code and checkpoints.
 
 \bibliographystyle{plain}
 \begin{thebibliography}{9}
